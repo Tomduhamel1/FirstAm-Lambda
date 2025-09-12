@@ -1,0 +1,8 @@
+{
+  "dependencies": {
+    "fast-xml-parser": "^4.4.0"
+  },
+  "devDependencies": {
+    "@anthropic-ai/claude-code": "^1.0.112"
+  }
+}
