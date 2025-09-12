@@ -119,7 +119,7 @@ async function handleL1Request(params) {
             )
         );
         
-        const settlementResult = buildSettlementServiceBlock(closingProducts, 2);
+        const settlementResult = buildSettlementServiceBlock(closingProducts, 2, stateCode);
         if (settlementResult.xml) {
             servicesParts.push(settlementResult.xml);
             currentSeq = settlementResult.nextSeq;

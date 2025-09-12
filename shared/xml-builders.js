@@ -93,8 +93,13 @@ function buildTitleServiceBlock(
     return xml;
 }
 
-function buildSettlementServiceBlock(settlementProducts, currentSeq) {
+function buildSettlementServiceBlock(settlementProducts, currentSeq, stateCode) {
     let seq = currentSeq;
+    
+    // Skip settlement block entirely for Florida due to FirstAm API bug with ID 531
+    if (stateCode === 'FL') {
+        return { xml: '', nextSeq: seq };
+    }
     
     if (!settlementProducts.length) {
         return { xml: '', nextSeq: seq };
