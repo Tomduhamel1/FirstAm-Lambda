@@ -134,101 +134,40 @@ function buildSettlementServiceBlock(settlementProducts, currentSeq, stateCode) 
     return { xml, nextSeq: seq };
 }
 
-function buildRecordingServiceBlock(recordingProducts, currentSeq, pageNumbers = null, salesContractAmount = null, noteAmount = null) {
+function buildRecordingServiceBlock(recordingProducts, currentSeq) {
     let seq = currentSeq;
     
-    // Log page numbers if provided
-    if (pageNumbers) {
-        console.info('Page numbers provided:', JSON.stringify(pageNumbers));
-    }
-    
-    console.info(`Recording products from ProductList: ${recordingProducts ? recordingProducts.length : 0}`);
-    
-    // For CT and other states where ProductList doesn't return recording products,
-    // use standard recording documents based on the simulator
-    if (!recordingProducts || !recordingProducts.length) {
-        // Default recording products for Purchase/Refinance transactions
-        // Use provided page numbers or defaults
-        const deedPages = pageNumbers?.deedPages || 3;
-        const mortgagePages = pageNumbers?.mortgagePages || 15;
-        
-        console.info(`Using recording page counts: deed=${deedPages}, mortgage=${mortgagePages}`);
-        
-        recordingProducts = [
-            { name: 'Conveyance Deed', identifier: 'DEED', pages: deedPages, consideration: null },
-            { name: 'Mortgage (Deed of Trust)', identifier: 'MORTGAGE', pages: mortgagePages, consideration: null }
-        ];
+    if (!recordingProducts.length) {
+        return { xml: '', nextSeq: seq };
     }
 
-    console.info(`Building recording services for ${recordingProducts.length} products`);
-    const xml = recordingProducts.map((product, index) => {
-        // Determine the identifier and name
-        let identifier, name, pages, labelPrefix;
-        
-        if (product.identifier) {
-            // Using our default structure
-            identifier = product.identifier;
-            name = product.name;
-            // Override with user-provided page numbers if available
-            if (pageNumbers) {
-                if (identifier === 'DEED' && pageNumbers.deedPages) {
-                    pages = pageNumbers.deedPages;
-                } else if (identifier === 'MORTGAGE' && pageNumbers.mortgagePages) {
-                    pages = pageNumbers.mortgagePages;
-                } else {
-                    pages = product.pages;
-                }
-            } else {
-                pages = product.pages;
-            }
-            labelPrefix = `RECORDING_${index + 1}`;
-        } else {
-            // From ProductList (if it ever returns data)
-            const id = product['lvis:DocId'] || product['lvis:Id'];
-            name = product['lvis:DocName'] || product['lvis:Name'];
-            pages = product['lvis:Pages'] || product['lvis:DefaultPages'] || 1;
-            
-            // Map the name to the correct identifier
-            // Check mortgage first since "Mortgage (Deed of Trust)" contains both words
-            if (name && (name.toLowerCase().includes('mortgage') || name.toLowerCase().includes('trust'))) {
-                identifier = 'MORTGAGE';
-            } else if (name && name.toLowerCase().includes('deed')) {
-                identifier = 'DEED';
-            } else {
-                identifier = id || `DOC_${index}`;
-            }
-            labelPrefix = `RECORDING_${index + 1}`;
-        }
-        
-        // Determine consideration amount based on document type
-        // Use actual amounts if provided, otherwise use defaults
-        const considerationAmount = identifier === 'DEED' 
-            ? (salesContractAmount || '500000')
-            : (noteAmount || '400000');
-        
-        console.info(`Building recording service ${index + 1}: ${identifier} - ${name}, pages: ${pages}, consideration: ${considerationAmount}`);
+    const xml = recordingProducts.map((product) => {
+        const id = product['lvis:DocId'];
+        const name = product['lvis:DocName'];
+        const pages = product['lvis:Pages'] || 1;
+        const safeLabel = `RECORDING_${id}`.replace(/[^A-Z0-9_]/g, '_');
 
         return `
 <SERVICE SequenceNumber="${seq++}">
   <SERVICE_PRODUCT>
     <SERVICE_PRODUCT_REQUEST>
       <SERVICE_PRODUCT_DETAIL>
-        <ServiceProductDescription>Recording</ServiceProductDescription>
+        <ServiceProductDescription>RecordingFee</ServiceProductDescription>
       </SERVICE_PRODUCT_DETAIL>
       <SERVICE_PRODUCT_NAMES>
-        <SERVICE_PRODUCT_NAME xlink:label="${labelPrefix}" SequenceNumber="1">
+        <SERVICE_PRODUCT_NAME xlink:label="${safeLabel}" SequenceNumber="1">
           <SERVICE_PRODUCT_NAME_DETAIL>
-            <ServiceProductNameDescription>${name}</ServiceProductNameDescription>
-            <ServiceProductNameIdentifier>${identifier}</ServiceProductNameIdentifier>
+            <ServiceProductNameDescription>RecordingProduct</ServiceProductNameDescription>
+            <ServiceProductNameIdentifier>${name}</ServiceProductNameIdentifier>
           </SERVICE_PRODUCT_NAME_DETAIL>
         </SERVICE_PRODUCT_NAME>
-        <SERVICE_PRODUCT_NAME xlink:label="${labelPrefix}_CONSIDERATION" SequenceNumber="2">
+        <SERVICE_PRODUCT_NAME xlink:label="${safeLabel}_DOC" SequenceNumber="2">
           <SERVICE_PRODUCT_NAME_DETAIL>
-            <ServiceProductNameDescription>ConsiderationAmount</ServiceProductNameDescription>
-            <ServiceProductNameIdentifier>${considerationAmount}</ServiceProductNameIdentifier>
+            <ServiceProductNameDescription>DocTypeID</ServiceProductNameDescription>
+            <ServiceProductNameIdentifier>${id}</ServiceProductNameIdentifier>
           </SERVICE_PRODUCT_NAME_DETAIL>
         </SERVICE_PRODUCT_NAME>
-        <SERVICE_PRODUCT_NAME xlink:label="${labelPrefix}_PAGES" SequenceNumber="3">
+        <SERVICE_PRODUCT_NAME xlink:label="${safeLabel}_PAGES" SequenceNumber="3">
           <SERVICE_PRODUCT_NAME_DETAIL>
             <ServiceProductNameDescription>PageCount</ServiceProductNameDescription>
             <ServiceProductNameIdentifier>${pages}</ServiceProductNameIdentifier>
@@ -288,7 +227,6 @@ function buildProductListRequestXML({
 }
 
 function buildRateCalcRequestXML({
-    actionType = 'RateCalc',  // Default to RateCalc if not specified
     PostalCode,
     SalesContractAmount,
     NoteAmount,
@@ -304,19 +242,19 @@ function buildRateCalcRequestXML({
     return `<?xml version="1.0" encoding="utf-8"?>
 <lvis:LVIS_XML xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:lvis="http://services.firstam.com/lvis/v2.0">
   <lvis:LVIS_HEADER>
-    <lvis:LVISActionType>${actionType}</lvis:LVISActionType>
+    <lvis:LVISActionType>RateCalc</lvis:LVISActionType>
     <lvis:ClientCustomerId>FNTE</lvis:ClientCustomerId>
     <lvis:ClientUniqueRequestId>CALC-${uuidv4()}</lvis:ClientUniqueRequestId>
   </lvis:LVIS_HEADER>
   <lvis:LVIS_CALCULATOR_REQUEST>
     <lvis:MISMO_XML>
-      <MESSAGE MISMOReferenceModelIdentifier="3.4.0" xmlns="http://www.mismo.org/residential/2009/schemas">
+      <MESSAGE xlink:label="M1" SequenceNumber="1">
         <DEAL_SETS>
-          <DEAL_SET>
+          <DEAL_SET xlink:label="DS1" SequenceNumber="1">
             <DEALS>
-              <DEAL>
+              <DEAL xlink:label="D1" SequenceNumber="1">
                 <PARTIES>
-                  <PARTY SequenceNumber="1">
+                  <PARTY xlink:label="Party_ID" SequenceNumber="1">
                     <INDIVIDUAL>
                       <NAME>
                         <FirstName>Test</FirstName>
@@ -333,7 +271,7 @@ function buildRateCalcRequestXML({
                   </PARTY>
                 </PARTIES>
                 <COLLATERALS>
-                  <COLLATERAL SequenceNumber="1">
+                  <COLLATERAL xlink:label="PropertyLocations" SequenceNumber="1">
                     <SUBJECT_PROPERTY>
                       <ADDRESS>
                         <CityName>${city}</CityName>
@@ -359,7 +297,7 @@ function buildRateCalcRequestXML({
                   </COLLATERAL>
                 </COLLATERALS>
                 <LOANS>
-                  <LOAN SequenceNumber="1">
+                  <LOAN xlink:label="SubjectLoan" SequenceNumber="1">
                     <LOAN_IDENTIFIERS>
                       <LOAN_IDENTIFIER SequenceNumber="1">
                         <LoanIdentifier>1234567</LoanIdentifier>

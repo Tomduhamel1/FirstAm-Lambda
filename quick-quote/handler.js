@@ -196,9 +196,37 @@ async function handleQuickQuote(event) {
         const parser = new xml2js.Parser();
         const parsedResponse = await parser.parseStringPromise(rateCalcGuideResponse.data);
         
-        // Extract fees from response
-        const fees = parsedResponse['lvis:LVIS_XML']['lvis:LVIS_CALCULATOR_RESPONSE'][0]['lvis:MISMO_XML'][0]['MESSAGE'][0]['DEAL_SETS'][0]['DEAL_SET'][0]['DEALS'][0]['DEAL'][0]['LOANS'][0]['LOAN'][0]['FEE_INFORMATION'][0]['FEES'][0]['FEE'];
-        const loanComments = parsedResponse['lvis:LVIS_XML']['lvis:LVIS_CALCULATOR_RESPONSE'][0]['lvis:MISMO_XML'][0]['MESSAGE'][0]['DEAL_SETS'][0]['DEAL_SET'][0]['DEALS'][0]['DEAL'][0]['LOANS'][0]['LOAN'][0]['LOAN_COMMENTS'][0]['LOAN_COMMENT'];
+        // Check for error response
+        const ackNack = parsedResponse['lvis:LVIS_XML']?.['lvis:LVIS_ACK_NACK'];
+        if (ackNack && ackNack.length > 0 && ackNack[0]['lvis:StatusCd']?.[0] !== '1000') {
+            const errorMsg = ackNack[0]['lvis:StatusDescription']?.[0] || 'Unknown error from FirstAm';
+            const errorDetail = ackNack[0]['lvis:ExceptionMessage']?.[0] || '';
+            console.error('FirstAm API Error:', errorMsg, errorDetail);
+            throw new Error(`FirstAm API Error: ${errorMsg}`);
+        }
+        
+        // Extract fees from response - handle both array and non-array formats
+        const calculatorResponse = parsedResponse['lvis:LVIS_XML']['lvis:LVIS_CALCULATOR_RESPONSE'];
+        const response = Array.isArray(calculatorResponse) ? calculatorResponse[0] : calculatorResponse;
+        
+        if (!response || !response['lvis:MISMO_XML']) {
+            throw new Error('Invalid response structure from FirstAm API');
+        }
+        
+        const mismoXML = Array.isArray(response['lvis:MISMO_XML']) ? response['lvis:MISMO_XML'][0] : response['lvis:MISMO_XML'];
+        const message = Array.isArray(mismoXML['MESSAGE']) ? mismoXML['MESSAGE'][0] : mismoXML['MESSAGE'];
+        const dealSets = Array.isArray(message['DEAL_SETS']) ? message['DEAL_SETS'][0] : message['DEAL_SETS'];
+        const dealSet = Array.isArray(dealSets['DEAL_SET']) ? dealSets['DEAL_SET'][0] : dealSets['DEAL_SET'];
+        const deals = Array.isArray(dealSet['DEALS']) ? dealSet['DEALS'][0] : dealSet['DEALS'];
+        const deal = Array.isArray(deals['DEAL']) ? deals['DEAL'][0] : deals['DEAL'];
+        const loans = Array.isArray(deal['LOANS']) ? deal['LOANS'][0] : deal['LOANS'];
+        const loan = Array.isArray(loans['LOAN']) ? loans['LOAN'][0] : loans['LOAN'];
+        const feeInfo = Array.isArray(loan['FEE_INFORMATION']) ? loan['FEE_INFORMATION'][0] : loan['FEE_INFORMATION'];
+        const feesContainer = Array.isArray(feeInfo['FEES']) ? feeInfo['FEES'][0] : feeInfo['FEES'];
+        const fees = feesContainer['FEE'];
+        
+        const loanCommentsContainer = Array.isArray(loan['LOAN_COMMENTS']) ? loan['LOAN_COMMENTS'][0] : loan['LOAN_COMMENTS'];
+        const loanComments = loanCommentsContainer ? loanCommentsContainer['LOAN_COMMENT'] : [];
 
         // Process fees
         const extractedFees = extractFees({

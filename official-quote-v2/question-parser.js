@@ -98,19 +98,21 @@ function generateHelpText(question) {
 /**
  * Validate user answers against question requirements
  * @param {Array} questions - Formatted questions
- * @param {Object} answers - User-provided answers (key-value pairs)
+ * @param {Object} answers - User-provided answers (key-value pairs by paramCode)
  * @returns {Object} Validation result with any errors
  */
 function validateAnswers(questions, answers) {
     const errors = [];
     
     questions.forEach(question => {
-        const answer = answers[question.id];
+        // Use paramCode as the key for answers since it's unique
+        const answer = answers[question.paramCode];
         
         // Check if required question has an answer
         if (question.required && !answer && answer !== 0) {
             errors.push({
-                questionId: question.id,
+                questionId: question.paramCode,
+                paramCode: question.paramCode,
                 error: 'This question is required'
             });
             return;
@@ -124,7 +126,8 @@ function validateAnswers(questions, answers) {
                     const validValues = question.options.map(opt => opt.value);
                     if (!validValues.includes(String(answer))) {
                         errors.push({
-                            questionId: question.id,
+                            questionId: question.paramCode,
+                            paramCode: question.paramCode,
                             error: `Invalid option. Must be one of: ${validValues.join(', ')}`
                         });
                     }
@@ -134,20 +137,23 @@ function validateAnswers(questions, answers) {
                 case 'currency':
                     if (isNaN(Number(answer))) {
                         errors.push({
-                            questionId: question.id,
+                            questionId: question.paramCode,
+                            paramCode: question.paramCode,
                             error: 'Must be a valid number'
                         });
                     } else {
                         const numValue = Number(answer);
                         if (question.min !== undefined && numValue < question.min) {
                             errors.push({
-                                questionId: question.id,
+                                questionId: question.paramCode,
+                                paramCode: question.paramCode,
                                 error: `Must be at least ${question.min}`
                             });
                         }
                         if (question.max !== undefined && numValue > question.max) {
                             errors.push({
-                                questionId: question.id,
+                                questionId: question.paramCode,
+                                paramCode: question.paramCode,
                                 error: `Must be at most ${question.max}`
                             });
                         }
@@ -158,7 +164,8 @@ function validateAnswers(questions, answers) {
                     // Text validation if needed
                     if (question.maxLength && answer.length > question.maxLength) {
                         errors.push({
-                            questionId: question.id,
+                            questionId: question.paramCode,
+                            paramCode: question.paramCode,
                             error: `Must be ${question.maxLength} characters or less`
                         });
                     }
@@ -186,25 +193,33 @@ function mapAnswersToL2Format(calcRateLevel2Data, userAnswers) {
     const updatedData = JSON.parse(JSON.stringify(calcRateLevel2Data));
     
     // Update answers in RateCalcQandA elements
-    const qandaArray = updatedData['lvis:RateCalcRequest']?.['lvis:QandAs']?.['lvis:RateCalcQandA'];
+    // Note: The data doesn't have namespace prefixes when parsed from XML
+    const rateCalcRequest = updatedData['RateCalcRequest'] || updatedData['lvis:RateCalcRequest'];
+    const qandas = rateCalcRequest?.['QandAs'] || rateCalcRequest?.['lvis:QandAs'];
+    const qandaArray = qandas?.['RateCalcQandA'] || qandas?.['lvis:RateCalcQandA'];
     
     if (qandaArray) {
         const questions = Array.isArray(qandaArray) ? qandaArray : [qandaArray];
         
         questions.forEach(qa => {
-            const linkKey = qa['lvis:LinkKey'];
-            const userAnswer = userAnswers[linkKey];
-            
-            // Only update if user provided an answer and IsPrompt is true
-            if (userAnswer !== undefined && qa['lvis:IsPrompt'] === 'true') {
-                // Update the answer
-                qa['lvis:Answers'] = {
-                    'lvis:string': String(userAnswer)
-                };
+            // Check for IsPrompt flag - questions with IsPrompt=true need answers
+            const isPrompt = qa['IsPrompt'] || qa['lvis:IsPrompt'];
+            if (isPrompt === 'true') {
+                // Get the param code to match with user answers
+                const param = qa['Param'] || qa['lvis:Param'];
+                const paramCode = param?.['ParamCode'] || param?.['lvis:ParamCode'];
                 
-                // Also update the Param value if it exists
-                if (qa['lvis:Param']) {
-                    qa['lvis:Param']['lvis:Value'] = String(userAnswer);
+                // User answers are keyed by paramCode (e.g., RFC_17_0, RFC_589_0, etc.)
+                const userAnswer = userAnswers[paramCode];
+                
+                if (userAnswer !== undefined) {
+                    // Update the answer - keep the same structure as original
+                    const answersKey = qa['Answers'] ? 'Answers' : 'lvis:Answers';
+                    const stringKey = qa['Answers']?.['string'] ? 'string' : 'lvis:string';
+                    
+                    qa[answersKey] = {
+                        [stringKey]: String(userAnswer)
+                    };
                 }
             }
         });
@@ -248,12 +263,13 @@ function groupQuestionsByCategory(questions) {
 /**
  * Generate a summary of questions and answers for display
  * @param {Array} questions - Formatted questions
- * @param {Object} answers - User answers
+ * @param {Object} answers - User answers (keyed by paramCode)
  * @returns {Array} Summary items
  */
 function generateQuestionSummary(questions, answers) {
     return questions.map(q => {
-        const answer = answers[q.id];
+        // Use paramCode to look up answers since it's unique
+        const answer = answers[q.paramCode];
         let displayAnswer = answer;
         
         // Format answer for display

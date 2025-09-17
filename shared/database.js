@@ -29,7 +29,7 @@ async function getStateFees(stateCode) {
     
     const params = {
         TableName: 'FNTEFees',
-        Key: { State: stateCode }
+        Key: { StateCode: stateCode }
     };
     
     try {

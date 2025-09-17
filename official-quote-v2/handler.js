@@ -56,6 +56,9 @@ async function handleOfficialQuoteV2(event) {
             case 'submit':
                 return await submitAnswersV2(requestBody);
                 
+            case 'updatePages':
+                return await updatePagesV2(requestBody);
+                
             case 'status':
                 return await getQuoteStatusV2(requestBody);
                 
@@ -65,7 +68,7 @@ async function handleOfficialQuoteV2(event) {
                     headers: getCORSHeaders(),
                     body: JSON.stringify({ 
                         error: 'Invalid action',
-                        message: 'Valid actions are: start, submit, status'
+                        message: 'Valid actions are: start, updatePages, submit, status'
                     })
                 };
         }
@@ -147,20 +150,79 @@ async function startOfficialQuoteV2(requestBody) {
                 })
             };
         } else {
-            // L2 questions required
+            // L2 questions required - but first need page numbers
             const formattedQuestions = formatQuestionsForWebApp(l1Result.questions);
+            
+            // Add page number and consideration amount questions as a separate step
+            const pageQuestions = [
+                {
+                    id: 'deedPages',
+                    question: 'Number of pages in the deed document',
+                    description: 'Enter the total number of pages in the conveyance deed',
+                    paramCode: 'deedPages',
+                    paramName: 'Deed Page Count',
+                    required: true,
+                    defaultAnswer: '3',
+                    type: 'number',
+                    min: 1,
+                    max: 100,
+                    step: 1,
+                    helpText: 'Standard deeds are typically 3-5 pages'
+                },
+                {
+                    id: 'mortgagePages',
+                    question: 'Number of pages in the mortgage document',
+                    description: 'Enter the total number of pages in the mortgage/deed of trust',
+                    paramCode: 'mortgagePages',
+                    paramName: 'Mortgage Page Count',
+                    required: true,
+                    defaultAnswer: '15',
+                    type: 'number',
+                    min: 1,
+                    max: 200,
+                    step: 1,
+                    helpText: 'Standard mortgages are typically 15-30 pages'
+                },
+                {
+                    id: 'deedConsideration',
+                    question: 'Consideration amount for deed',
+                    description: 'Enter the consideration amount for the conveyance deed',
+                    paramCode: 'deedConsideration',
+                    paramName: 'Deed Consideration Amount',
+                    required: true,
+                    defaultAnswer: String(SalesContractAmount || 500000),
+                    type: 'number',
+                    min: 0,
+                    step: 1,
+                    helpText: 'Typically the sales/purchase price'
+                },
+                {
+                    id: 'mortgageConsideration',
+                    question: 'Consideration amount for mortgage',
+                    description: 'Enter the consideration amount for the mortgage/deed of trust',
+                    paramCode: 'mortgageConsideration',
+                    paramName: 'Mortgage Consideration Amount',
+                    required: true,
+                    defaultAnswer: String(NoteAmount || 400000),
+                    type: 'number',
+                    min: 0,
+                    step: 1,
+                    helpText: 'Typically the loan amount'
+                }
+            ];
             
             return {
                 statusCode: 200,
                 headers: getCORSHeaders(),
                 body: JSON.stringify({
                     sessionId,
-                    status: 'pending_answers',
-                    message: 'Additional information required',
-                    hasCalculatedRates: false,
-                    questions: formattedQuestions,
+                    status: 'pending_page_numbers',
+                    message: 'Page numbers required before proceeding',
+                    requiresPageNumbers: true,
+                    pageQuestions,
                     locationInfo: l1Result.locationData,
-                    expiresIn: '24 hours'
+                    expiresIn: '24 hours',
+                    nextStep: 'Use updatePages action with page numbers to continue'
                 })
             };
         }
@@ -172,6 +234,131 @@ async function startOfficialQuoteV2(requestBody) {
             headers: getCORSHeaders(),
             body: JSON.stringify({ 
                 error: 'Failed to start official quote',
+                details: error.message 
+            })
+        };
+    }
+}
+
+/**
+ * Update page numbers for recording documents
+ */
+async function updatePagesV2(requestBody) {
+    const { sessionId, pageNumbers } = requestBody;
+    
+    // Validate required fields
+    if (!sessionId || !pageNumbers) {
+        return {
+            statusCode: 400,
+            headers: getCORSHeaders(),
+            body: JSON.stringify({ 
+                error: 'sessionId and pageNumbers are required' 
+            })
+        };
+    }
+    
+    // Validate page numbers and consideration amounts
+    if (!pageNumbers.deedPages || !pageNumbers.mortgagePages) {
+        return {
+            statusCode: 400,
+            headers: getCORSHeaders(),
+            body: JSON.stringify({ 
+                error: 'Both deedPages and mortgagePages are required',
+                details: 'Provide numeric values for both deed and mortgage page counts'
+            })
+        };
+    }
+    
+    const deedPages = parseInt(pageNumbers.deedPages);
+    const mortgagePages = parseInt(pageNumbers.mortgagePages);
+    const deedConsideration = pageNumbers.deedConsideration ? parseInt(pageNumbers.deedConsideration) : null;
+    const mortgageConsideration = pageNumbers.mortgageConsideration ? parseInt(pageNumbers.mortgageConsideration) : null;
+    
+    if (isNaN(deedPages) || deedPages < 1 || isNaN(mortgagePages) || mortgagePages < 1) {
+        return {
+            statusCode: 400,
+            headers: getCORSHeaders(),
+            body: JSON.stringify({ 
+                error: 'Invalid page numbers',
+                details: 'Page numbers must be positive integers'
+            })
+        };
+    }
+    
+    try {
+        // Retrieve session
+        const session = await getL2Session(sessionId);
+        
+        if (!session) {
+            return {
+                statusCode: 404,
+                headers: getCORSHeaders(),
+                body: JSON.stringify({ 
+                    error: 'Session not found or expired' 
+                })
+            };
+        }
+        
+        if (session.status === 'completed') {
+            return {
+                statusCode: 400,
+                headers: getCORSHeaders(),
+                body: JSON.stringify({ 
+                    error: 'This quote has already been completed'
+                })
+            };
+        }
+        
+        // Store page numbers and consideration amounts in session
+        const { storePageNumbers } = require('./session-manager');
+        await storePageNumbers(sessionId, { 
+            deedPages, 
+            mortgagePages,
+            deedConsideration,
+            mortgageConsideration
+        });
+        
+        // Re-run L1 with updated page numbers and consideration amounts
+        const l1Result = await handleL1Request({
+            PostalCode: session.PostalCode,
+            SalesContractAmount: deedConsideration || session.SalesContractAmount,
+            NoteAmount: mortgageConsideration || session.NoteAmount,
+            LoanPurposeType: session.LoanPurposeType,
+            forceL2Questions: session.forceL2Questions || true,
+            pageNumbers: { deedPages, mortgagePages }
+        });
+        
+        // Store updated L1 response
+        await storeL1ResponseData(sessionId, l1Result);
+        
+        // Return updated L2 questions
+        const formattedQuestions = formatQuestionsForWebApp(l1Result.questions);
+        
+        return {
+            statusCode: 200,
+            headers: getCORSHeaders(),
+            body: JSON.stringify({
+                sessionId,
+                status: 'pending_answers',
+                message: 'Page numbers updated, please answer the following questions',
+                questions: formattedQuestions,
+                pageNumbers: { 
+                    deedPages, 
+                    mortgagePages,
+                    deedConsideration,
+                    mortgageConsideration
+                },
+                locationInfo: l1Result.locationData
+            })
+        };
+        
+    } catch (error) {
+        console.error('Error updating page numbers:', error);
+        return {
+            statusCode: 500,
+            headers: getCORSHeaders(),
+            body: JSON.stringify({ 
+                error: 'Failed to update page numbers',
                 details: error.message 
             })
         };
@@ -255,7 +442,8 @@ async function submitAnswersV2(requestBody) {
         const l2Result = await handleL2Request({
             calcRateLevel2Data: l1Response.calcRateLevel2Data,
             originalMISMO: l1Response.originalMISMO,
-            userAnswers: answers
+            userAnswers: answers,
+            pageNumbers: session.pageNumbers // Pass stored page numbers if available
         });
         
         // Store final rates

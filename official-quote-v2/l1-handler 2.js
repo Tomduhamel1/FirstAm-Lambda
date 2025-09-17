@@ -25,8 +25,7 @@ async function handleL1Request(params) {
         SalesContractAmount,
         NoteAmount,
         LoanPurposeType,
-        forceL2Questions = false, // Use RateCalcNoAutoCalc to force L2 questions
-        pageNumbers = null // Optional page numbers for recording documents
+        forceL2Questions = false // Use RateCalcNoAutoCalc to force L2 questions
     } = params;
     
     console.info('L1 Request for official quote:', { PostalCode, LoanPurposeType, forceL2Questions });
@@ -120,19 +119,13 @@ async function handleL1Request(params) {
             )
         );
         
-        // Skip settlement services for Florida - they don't need closing costs
-        if (stateCode !== 'FL') {
-            const settlementResult = buildSettlementServiceBlock(closingProducts, 2, stateCode);
-            if (settlementResult.xml) {
-                servicesParts.push(settlementResult.xml);
-                currentSeq = settlementResult.nextSeq;
-            }
-        } else {
-            console.info('Skipping settlement services for Florida');
-            currentSeq = 2; // Settlement would have been seq 2, so recording starts at 2
+        const settlementResult = buildSettlementServiceBlock(closingProducts, 2, stateCode);
+        if (settlementResult.xml) {
+            servicesParts.push(settlementResult.xml);
+            currentSeq = settlementResult.nextSeq;
         }
         
-        const recordingResult = buildRecordingServiceBlock(recordingProducts, currentSeq, pageNumbers, salesAmount, noteAmount);
+        const recordingResult = buildRecordingServiceBlock(recordingProducts, currentSeq);
         if (recordingResult.xml) {
             servicesParts.push(recordingResult.xml);
         }
@@ -142,7 +135,7 @@ async function handleL1Request(params) {
         // Step 2: Send RateCalc L1 request
         const actionType = forceL2Questions ? 'RateCalcNoAutoCalc' : 'RateCalc';
         
-        const requestXML = buildRateCalcRequestXML({
+        const requestXML = buildRateCalcRequestXMLForL1({
             actionType,
             PostalCode,
             SalesContractAmount: salesAmount,
@@ -155,8 +148,6 @@ async function handleL1Request(params) {
         });
         
         console.info(`Sending L1 RateCalc request (${actionType})...`);
-        // Log first 500 chars of request for debugging
-        console.info('Request XML (first 500 chars):', requestXML.substring(0, 500));
         
         const l1Response = await axios.post(
             'https://calculator.lvis.firstam.com/',
@@ -176,40 +167,9 @@ async function handleL1Request(params) {
             ignoreAttrs: false,
         });
         
-        // Debug: Check top-level structure
-        console.info('Top level keys:', Object.keys(parsedL1Response));
-        if (parsedL1Response['lvis:LVIS_XML']) {
-            console.info('LVIS_XML keys:', Object.keys(parsedL1Response['lvis:LVIS_XML']));
-            // Check for ACK_NACK
-            const ackNack = parsedL1Response['lvis:LVIS_XML']['lvis:LVIS_ACK_NACK'];
-            if (ackNack) {
-                console.info('ACK_NACK Status:', ackNack['lvis:StatusCd'], 'Description:', ackNack['lvis:StatusDescription']);
-                if (ackNack['lvis:StatusCd'] !== '1000') {
-                    // Error occurred - log more details
-                    console.error('Full ACK_NACK:', JSON.stringify(ackNack, null, 2));
-                    const errorDetail = ackNack['lvis:StatusDetail'] || ackNack['lvis:StatusComment'] || ackNack['lvis:Comments'];
-                    if (errorDetail) {
-                        console.error('Error detail:', errorDetail);
-                    }
-                    // Log the echo'd request to see what we sent
-                    const echoedRequest = parsedL1Response['lvis:LVIS_XML']['lvis:LVIS_CALCULATOR_REQUEST'];
-                    if (echoedRequest) {
-                        console.error('FirstAm echoed our request - checking MISMO structure');
-                        const mismo = echoedRequest['lvis:MISMO_XML'];
-                        if (mismo) {
-                            console.info('MISMO present in echoed request');
-                        }
-                    }
-                }
-            }
-        }
-        
         // Check if rates are calculated or L2 questions are needed
         const calculatorResponse = parsedL1Response['lvis:LVIS_XML']?.['lvis:LVIS_CALCULATOR_RESPONSE'];
-        console.info('Calculator response keys:', calculatorResponse ? Object.keys(calculatorResponse) : 'No calculator response');
-        // Note: FirstAm has a typo in their field name - missing 'l' in Calculated
-        const hasCalculatedRates = calculatorResponse?.['lvis:HasCalcuatedRates'] === 'true' || 
-                                   calculatorResponse?.['lvis:HasCalculatedRates'] === 'true';
+        const hasCalculatedRates = calculatorResponse?.['lvis:HasCalculatedRates'] === 'true';
         
         if (hasCalculatedRates) {
             console.info('Rates calculated in L1 response');
@@ -234,19 +194,7 @@ async function handleL1Request(params) {
             
             // Parse L2 questions
             const calcRateLevel2Data = calculatorResponse?.['lvis:CalcRateLevel2Data'];
-            console.info('CalcRateLevel2Data present:', !!calcRateLevel2Data);
-            if (calcRateLevel2Data) {
-                console.info('CalcRateLevel2Data keys:', Object.keys(calcRateLevel2Data));
-                // Check for RateCalcRequest
-                const rateCalcRequest = calcRateLevel2Data['lvis:RateCalcRequest'];
-                console.info('RateCalcRequest present:', !!rateCalcRequest);
-                if (rateCalcRequest) {
-                    const qandas = rateCalcRequest['lvis:QandAs'];
-                    console.info('QandAs present:', !!qandas);
-                }
-            }
             const questions = parseL2Questions(calcRateLevel2Data);
-            console.info('Parsed questions count:', questions.length);
             
             // Store original MISMO_XML for L2 request
             const originalMISMO = calculatorResponse?.['lvis:MISMO_XML'];

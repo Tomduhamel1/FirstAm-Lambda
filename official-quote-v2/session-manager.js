@@ -192,6 +192,20 @@ async function storeUserAnswers(sessionId, answers) {
 }
 
 /**
+ * Store page numbers in session
+ * @param {String} sessionId - Session ID
+ * @param {Object} pageNumbers - Page numbers for documents
+ */
+async function storePageNumbers(sessionId, pageNumbers) {
+    const updates = {
+        pageNumbers,
+        updatedAt: new Date().toISOString()
+    };
+    
+    await updateL2Session(sessionId, updates);
+}
+
+/**
  * Store final rates in session
  * @param {String} sessionId - Session ID
  * @param {Object} finalRates - Final rate data
@@ -297,6 +311,7 @@ module.exports = {
     deleteL2Session,
     storeL1ResponseData,
     storeUserAnswers,
+    storePageNumbers,
     storeFinalRates,
     cleanupExpiredSessions,
     getSessionStats

@@ -61,6 +61,9 @@ async function handleL2Request(params) {
             ignoreAttrs: false,
         });
         
+        // Debug log the raw response (first 2000 chars)
+        console.info('L2 Raw Response (first 2000 chars):', l2Response.data.substring(0, 2000));
+        
         // Extract fees and loan comments
         const fees = extractFeesFromL2Response(parsedL2Response);
         const loanComments = extractLoanCommentsFromL2Response(parsedL2Response);
@@ -115,29 +118,42 @@ function buildL2RequestXML({ calcRateLevel2Data, originalMISMO }) {
         xmldec: { version: '1.0', encoding: 'utf-8' }
     });
     
-    // Build the CalcRateLevel2Data XML
-    const l2DataXML = builder.buildObject({ 
-        'lvis:CalcRateLevel2Data': calcRateLevel2Data 
-    }).replace('<?xml version="1.0" encoding="utf-8"?>', '');
+    // Build the CalcRateLevel2Data XML - will be namespaced properly
+    const l2DataObj = {
+        'lvis:CalcRateLevel2Data': calcRateLevel2Data
+    };
+    const l2DataXML = builder.buildObject(l2DataObj)
+        .replace('<?xml version="1.0" encoding="utf-8"?>', '')
+        .replace('<lvis:CalcRateLevel2Data', '<lvis:CalcRateLevel2Data')
+        .replace('</lvis:CalcRateLevel2Data>', '</lvis:CalcRateLevel2Data>')
+        .trim();
     
-    // Build the original MISMO XML
-    const mismoXML = builder.buildObject({ 
-        'lvis:MISMO_XML': originalMISMO 
-    }).replace('<?xml version="1.0" encoding="utf-8"?>', '');
+    // Build the MISMO XML if provided - should be included in L2 submit based on simulator
+    let mismoXML = '';
+    if (originalMISMO) {
+        const mismoObj = {
+            'lvis:MISMO_XML': originalMISMO
+        };
+        mismoXML = builder.buildObject(mismoObj)
+            .replace('<?xml version="1.0" encoding="utf-8"?>', '')
+            .replace('<lvis:MISMO_XML', '<lvis:MISMO_XML')
+            .replace('</lvis:MISMO_XML>', '</lvis:MISMO_XML>')
+            .trim();
+    }
     
-    // Construct the complete L2 request
+    // Construct the complete L2 request - includes both CalcRateLevel2Data AND MISMO_XML
+    // This matches the simulator's second RateCalcNoAutoCalc request structure
     return `<?xml version="1.0" encoding="utf-8"?>
 <lvis:LVIS_XML xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:lvis="http://services.firstam.com/lvis/v2.0">
   <lvis:LVIS_HEADER>
-    <lvis:LVISActionType>RateCalc</lvis:LVISActionType>
+    <lvis:LVISActionType>RateCalcNoAutoCalc</lvis:LVISActionType>
     <lvis:ClientCustomerId>FNTE</lvis:ClientCustomerId>
     <lvis:ClientUniqueRequestId>L2-${uuidv4()}</lvis:ClientUniqueRequestId>
   </lvis:LVIS_HEADER>
-  <lvis:LVIS_CALCULATOR_RESPONSE>
+  <lvis:LVIS_CALCULATOR_REQUEST>
     ${l2DataXML}
-    <lvis:HasCalculatedRates>false</lvis:HasCalculatedRates>
     ${mismoXML}
-  </lvis:LVIS_CALCULATOR_RESPONSE>
+  </lvis:LVIS_CALCULATOR_REQUEST>
 </lvis:LVIS_XML>`;
 }
 
@@ -146,17 +162,41 @@ function buildL2RequestXML({ calcRateLevel2Data, originalMISMO }) {
  */
 function extractFeesFromL2Response(parsedResponse) {
     try {
-        const path = parsedResponse['lvis:LVIS_XML']?.['lvis:LVIS_CALCULATOR_RESPONSE']?.
-            ['lvis:MISMO_XML']?.['MESSAGE']?.['DEAL_SETS']?.['DEAL_SET']?.
-            ['DEALS']?.['DEAL']?.['LOANS']?.['LOAN']?.['FEE_INFORMATION']?.
-            ['FEES']?.['FEE'];
+        // Debug log the structure
+        console.info('L2 Response structure keys:', Object.keys(parsedResponse));
         
-        if (!path) {
-            console.warn('No fees found in L2 response');
-            return [];
+        // Check if we have the expected structure
+        const lvisXML = parsedResponse['lvis:LVIS_XML'];
+        if (lvisXML) {
+            const calcResponse = lvisXML['lvis:LVIS_CALCULATOR_RESPONSE'];
+            if (calcResponse) {
+                console.info('Calculator response keys:', Object.keys(calcResponse));
+                
+                // The MISMO_XML section doesn't have lvis: namespace
+                const mismoXML = calcResponse['lvis:MISMO_XML'];
+                if (mismoXML) {
+                    console.info('MISMO_XML type:', typeof mismoXML);
+                    
+                    // Handle both array and non-array formats
+                    const message = Array.isArray(mismoXML) ? mismoXML[0]['MESSAGE'] : mismoXML['MESSAGE'];
+                    
+                    if (message) {
+                        const messageParsed = Array.isArray(message) ? message[0] : message;
+                        const path = messageParsed?.['DEAL_SETS']?.['DEAL_SET']?.
+                            ['DEALS']?.['DEAL']?.['LOANS']?.['LOAN']?.['FEE_INFORMATION']?.
+                            ['FEES']?.['FEE'];
+                        
+                        if (path) {
+                            console.info(`Found ${Array.isArray(path) ? path.length : 1} fees in L2 response`);
+                            return Array.isArray(path) ? path : [path];
+                        }
+                    }
+                }
+            }
         }
         
-        return Array.isArray(path) ? path : [path];
+        console.warn('No fees found in L2 response - structure not as expected');
+        return [];
     } catch (error) {
         console.error('Error extracting fees from L2 response:', error);
         return [];
@@ -168,17 +208,33 @@ function extractFeesFromL2Response(parsedResponse) {
  */
 function extractLoanCommentsFromL2Response(parsedResponse) {
     try {
-        const path = parsedResponse['lvis:LVIS_XML']?.['lvis:LVIS_CALCULATOR_RESPONSE']?.
-            ['lvis:MISMO_XML']?.['MESSAGE']?.['DEAL_SETS']?.['DEAL_SET']?.
-            ['DEALS']?.['DEAL']?.['LOANS']?.['LOAN']?.['LOAN_COMMENTS']?.
-            ['LOAN_COMMENT'];
-        
-        if (!path) {
-            console.warn('No loan comments found in L2 response');
-            return [];
+        const lvisXML = parsedResponse['lvis:LVIS_XML'];
+        if (lvisXML) {
+            const calcResponse = lvisXML['lvis:LVIS_CALCULATOR_RESPONSE'];
+            if (calcResponse) {
+                // The MISMO_XML section doesn't have lvis: namespace
+                const mismoXML = calcResponse['lvis:MISMO_XML'];
+                if (mismoXML) {
+                    // Handle both array and non-array formats
+                    const message = Array.isArray(mismoXML) ? mismoXML[0]['MESSAGE'] : mismoXML['MESSAGE'];
+                    
+                    if (message) {
+                        const messageParsed = Array.isArray(message) ? message[0] : message;
+                        const path = messageParsed?.['DEAL_SETS']?.['DEAL_SET']?.
+                            ['DEALS']?.['DEAL']?.['LOANS']?.['LOAN']?.['LOAN_COMMENTS']?.
+                            ['LOAN_COMMENT'];
+                        
+                        if (path) {
+                            console.info(`Found ${Array.isArray(path) ? path.length : 1} loan comments in L2 response`);
+                            return Array.isArray(path) ? path : [path];
+                        }
+                    }
+                }
+            }
         }
         
-        return Array.isArray(path) ? path : [path];
+        console.warn('No loan comments found in L2 response');
+        return [];
     } catch (error) {
         console.error('Error extracting loan comments from L2 response:', error);
         return [];
@@ -191,18 +247,20 @@ function extractLoanCommentsFromL2Response(parsedResponse) {
 function processFees(fees) {
     const processedFees = [];
     
-    fees.forEach(fee => {
+    fees.forEach((fee, index) => {
         try {
-            const feeDetail = fee['FEE_DETAIL']?.[0] || fee['FEE_DETAIL'];
-            const feePayments = fee['FEE_PAYMENTS']?.[0]?.['FEE_PAYMENT'] || 
-                               fee['FEE_PAYMENTS']?.['FEE_PAYMENT'] || [];
+            // Debug first fee structure
+            if (index === 0) {
+                console.info('First fee structure:', JSON.stringify(fee).substring(0, 500));
+            }
             
-            const feeDescription = feeDetail?.['FeeDescription']?.[0] || 
-                                 feeDetail?.['FeeDescription'] || 
-                                 'Unknown Fee';
+            const feeDetail = fee['FEE_DETAIL'];
+            const feePayments = fee['FEE_PAYMENTS']?.['FEE_PAYMENT'] || [];
             
-            const disclosureItemName = feeDetail?.['DisclosureItemName']?.[0] || 
-                                      feeDetail?.['DisclosureItemName'] || '';
+            // Handle both string and array formats - with explicitArray: false, it's a string
+            const feeDescription = feeDetail?.['FeeDescription'] || 'Unknown Fee';
+            
+            const disclosureItemName = feeDetail?.['DisclosureItemName'] || '';
             
             // Extract buyer and seller amounts
             let buyerAmount = 0;
@@ -211,16 +269,14 @@ function processFees(fees) {
             const payments = Array.isArray(feePayments) ? feePayments : [feePayments];
             
             payments.forEach(payment => {
-                const paidByType = payment['FeePaymentPaidByType']?.[0] || 
-                                 payment['FeePaymentPaidByType'];
+                // With explicitArray: false, these are direct strings/numbers
+                const paidByType = payment['FeePaymentPaidByType'];
                 
                 const actualAmount = parseFloat(
-                    payment['FeeActualPaymentAmount']?.[0] || 
                     payment['FeeActualPaymentAmount'] || 0
                 );
                 
                 const estimatedAmount = parseFloat(
-                    payment['FeeEstimatedPaymentAmount']?.[0] || 
                     payment['FeeEstimatedPaymentAmount'] || 0
                 );
                 
