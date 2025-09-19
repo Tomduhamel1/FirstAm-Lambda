@@ -1,0 +1,267 @@
+{
+  "MESSAGE": {
+    "$": {
+      "MISMOReferenceModelIdentifier": "3.4.0",
+      "xmlns": "http://www.mismo.org/residential/2009/schemas"
+    },
+    "DEAL_SETS": {
+      "DEAL_SET": {
+        "DEALS": {
+          "DEAL": {
+            "COLLATERALS": {
+              "COLLATERAL": {
+                "$": {
+                  "SequenceNumber": "1"
+                },
+                "SUBJECT_PROPERTY": {
+                  "ADDRESS": {
+                    "CityName": "Santa Monica",
+                    "CountyName": "Los Angeles",
+                    "PostalCode": "90405",
+                    "StateCode": "CA"
+                  },
+                  "SALES_CONTRACTS": {
+                    "SALES_CONTRACT": {
+                      "SALES_CONTRACT_DETAIL": {
+                        "SalesContractAmount": "500000"
+                      }
+                    }
+                  },
+                  "SITE": {
+                    "SITE_LOCATIONS": {
+                      "SITE_LOCATION": {
+                        "LocationType": "Residential",
+                        "LocationTypeId": "-1"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "LOANS": {
+              "LOAN": {
+                "$": {
+                  "SequenceNumber": "1"
+                },
+                "FEE_INFORMATION": {
+                  "FEES": {
+                    "FEE": [
+                      {
+                        "$": {
+                          "xlink:label": "FEE_POLICY_1",
+                          "SequenceNumber": "1"
+                        },
+                        "FEE_DETAIL": {
+                          "FeeActualTotalAmount": "3097.0",
+                          "FeeDescription": "Eagle Owner's Policy",
+                          "FeePaidToType": "ThirdPartyProvider",
+                          "FeeType": {
+                            "_": "TitleOwnersCoveragePremium",
+                            "$": {
+                              "DisplayLabelText": "Eagle Owner's Policy"
+                            }
+                          },
+                          "DisclosureSectionNumber": "H",
+                          "DisclosureSectionName": "Owner's Title Insurance",
+                          "DisclosureItemName": "Title - Owner's Title Insurance (optional) (Eagle Owner's Policy)",
+                          "DisclosureHUDLine": "HUD-1 Line 1103"
+                        },
+                        "FEE_PAYMENTS": {
+                          "FEE_PAYMENT": [
+                            {
+                              "$": {"SequenceNumber": "1"},
+                              "FeeActualPaymentAmount": "0.0",
+                              "FeePaymentPaidByType": "Buyer",
+                              "FeePaymentPaidOutsideOfClosingIndicator": "false"
+                            },
+                            {
+                              "$": {"SequenceNumber": "2"},
+                              "FeeActualPaymentAmount": "3097.0",
+                              "FeePaymentPaidByType": "Seller",
+                              "FeePaymentPaidOutsideOfClosingIndicator": "false"
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "$": {
+                          "xlink:label": "FEE_POLICY_2",
+                          "SequenceNumber": "2"
+                        },
+                        "FEE_DETAIL": {
+                          "FeeActualTotalAmount": "2099.0",
+                          "FeeDescription": "ALTA Loan Policy - Extended",
+                          "FeePaidToType": "ThirdPartyProvider",
+                          "FeeType": {
+                            "_": "TitleLendersCoveragePremium",
+                            "$": {
+                              "DisplayLabelText": "ALTA Loan Policy - Extended"
+                            }
+                          },
+                          "DisclosureSectionNumber": "B or C",
+                          "DisclosureSectionName": "Lender's Title Insurance",
+                          "DisclosureItemName": "Title - Lender's Title Insurance(ALTA Loan Policy - Extended)",
+                          "DisclosureHUDLine": "HUD-1 Line 1104"
+                        },
+                        "FEE_PAYMENTS": {
+                          "FEE_PAYMENT": [
+                            {
+                              "$": {"SequenceNumber": "1"},
+                              "FeeActualPaymentAmount": "2099.0",
+                              "FeePaymentPaidByType": "Buyer",
+                              "FeePaymentPaidOutsideOfClosingIndicator": "false"
+                            },
+                            {
+                              "$": {"SequenceNumber": "2"},
+                              "FeeActualPaymentAmount": "0.0",
+                              "FeePaymentPaidByType": "Seller",
+                              "FeePaymentPaidOutsideOfClosingIndicator": "false"
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "$": {
+                          "xlink:label": "FEE_RECORDING_DEED",
+                          "SequenceNumber": "3"
+                        },
+                        "FEE_DETAIL": {
+                          "FeeActualTotalAmount": "42.0",
+                          "FeeDescription": "RecordingFee",
+                          "DisclosureItemName": "Conveyance Deed - Recording Fee",
+                          "DisclosureHUDLine": "HUD-1 Line 1201"
+                        },
+                        "FEE_PAYMENTS": {
+                          "FEE_PAYMENT": [
+                            {
+                              "$": {"SequenceNumber": "1"},
+                              "FeeActualPaymentAmount": "42.0",
+                              "FeePaymentPaidByType": "Buyer",
+                              "FeePaymentPaidOutsideOfClosingIndicator": "false"
+                            },
+                            {
+                              "$": {"SequenceNumber": "2"},
+                              "FeeActualPaymentAmount": "0.0",
+                              "FeePaymentPaidByType": "Seller",
+                              "FeePaymentPaidOutsideOfClosingIndicator": "false"
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "$": {
+                          "SequenceNumber": "4"
+                        },
+                        "FEE_DETAIL": {
+                          "FeeActualTotalAmount": "550.0",
+                          "FeeDescription": "TransferTax",
+                          "DisclosureItemName": "Conveyance Deed - Documentary Transfer Tax"
+                        },
+                        "FEE_PAYMENTS": {
+                          "FEE_PAYMENT": [
+                            {
+                              "$": {"SequenceNumber": "1"},
+                              "FeeActualPaymentAmount": "0.0",
+                              "FeePaymentPaidByType": "Buyer",
+                              "FeePaymentPaidOutsideOfClosingIndicator": "false"
+                            },
+                            {
+                              "$": {"SequenceNumber": "2"},
+                              "FeeActualPaymentAmount": "550.0",
+                              "FeePaymentPaidByType": "Seller",
+                              "FeePaymentPaidOutsideOfClosingIndicator": "false"
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "$": {
+                          "SequenceNumber": "5"
+                        },
+                        "FEE_DETAIL": {
+                          "FeeActualTotalAmount": "1500.0",
+                          "FeeDescription": "TransferTax",
+                          "DisclosureItemName": "Conveyance Deed - Town Transfer Tax"
+                        },
+                        "FEE_PAYMENTS": {
+                          "FEE_PAYMENT": [
+                            {
+                              "$": {"SequenceNumber": "1"},
+                              "FeeActualPaymentAmount": "0.0",
+                              "FeePaymentPaidByType": "Buyer",
+                              "FeePaymentPaidOutsideOfClosingIndicator": "false"
+                            },
+                            {
+                              "$": {"SequenceNumber": "2"},
+                              "FeeActualPaymentAmount": "1500.0",
+                              "FeePaymentPaidByType": "Seller",
+                              "FeePaymentPaidOutsideOfClosingIndicator": "false"
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "$": {
+                          "xlink:label": "FEE_RECORDING_MORTGAGE",
+                          "SequenceNumber": "6"
+                        },
+                        "FEE_DETAIL": {
+                          "FeeActualTotalAmount": "29.0",
+                          "FeeDescription": "RecordingFee",
+                          "DisclosureItemName": "Mortgage (Deed of Trust) - Recording Fee",
+                          "DisclosureHUDLine": "HUD-1 Line 1202"
+                        },
+                        "FEE_PAYMENTS": {
+                          "FEE_PAYMENT": [
+                            {
+                              "$": {"SequenceNumber": "1"},
+                              "FeeActualPaymentAmount": "29.0",
+                              "FeePaymentPaidByType": "Buyer",
+                              "FeePaymentPaidOutsideOfClosingIndicator": "false"
+                            },
+                            {
+                              "$": {"SequenceNumber": "2"},
+                              "FeeActualPaymentAmount": "0.0",
+                              "FeePaymentPaidByType": "Seller",
+                              "FeePaymentPaidOutsideOfClosingIndicator": "false"
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "$": {
+                          "SequenceNumber": "7"
+                        },
+                        "FEE_DETAIL": {
+                          "FeeActualTotalAmount": "75.0",
+                          "FeeDescription": "RecordingFee",
+                          "DisclosureItemName": "Mortgage (Deed of Trust) - Affordable Housing Fee"
+                        },
+                        "FEE_PAYMENTS": {
+                          "FEE_PAYMENT": [
+                            {
+                              "$": {"SequenceNumber": "1"},
+                              "FeeActualPaymentAmount": "75.0",
+                              "FeePaymentPaidByType": "Buyer",
+                              "FeePaymentPaidOutsideOfClosingIndicator": "false"
+                            },
+                            {
+                              "$": {"SequenceNumber": "2"},
+                              "FeeActualPaymentAmount": "0.0",
+                              "FeePaymentPaidByType": "Seller",
+                              "FeePaymentPaidOutsideOfClosingIndicator": "false"
+                            }
+                          ]
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -176,6 +176,9 @@ function extractFeesFromL2Response(parsedResponse) {
                 const mismoXML = calcResponse['lvis:MISMO_XML'];
                 if (mismoXML) {
                     console.info('MISMO_XML type:', typeof mismoXML);
+
+                    // Log the raw XML for debugging
+                    console.info('Raw MISMO XML (first 3000 chars):', JSON.stringify(mismoXML).substring(0, 3000));
                     
                     // Handle both array and non-array formats
                     const message = Array.isArray(mismoXML) ? mismoXML[0]['MESSAGE'] : mismoXML['MESSAGE'];

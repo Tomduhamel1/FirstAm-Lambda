@@ -1,7 +1,7 @@
 const axios = require('axios');
 
 const clientId = process.env.FIRSTAM_CLIENT_ID || 'ff4f2fdb-fe7d-430b-bb6c-8b95aae52f02';
-const clientSecret = process.env.FIRSTAM_CLIENT_SECRET || 'oQA' + '8Q~3.eKRJHwzvm_B1inCFJnjx8MZZSz9~QcEH';
+const clientSecret = process.env.FIRSTAM_CLIENT_SECRET || 'o4G' + '8Q~Y0rdx8DJfYDDnsIvx8wUfakNwSStNsmcC-';
 const tenantId = process.env.FIRSTAM_TENANT_ID || '4cc65fd6-9c76-4871-a542-eb12a5a7800c';
 const oauthUrl = `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`;
 const scope = '58730ff7-91da-4e84-8155-59967e632e7d/.default';
