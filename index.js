@@ -32,8 +32,8 @@ exports.handler = async (event) => {
     
     try {
         // Route based on path or request type
-        // Default behavior: if no specific path, check for QuoteType in body
-        if (path === '/' || path === '/quick-quote' || !path.includes('official')) {
+        // Handle API Gateway paths
+        if (path === '/fee-calculator/quick-quote' || path === '/' || path === '/quick-quote' || !path.includes('official')) {
             // Check if the request body indicates an official quote
             let requestBody = {};
             try {
@@ -41,21 +41,21 @@ exports.handler = async (event) => {
             } catch (e) {
                 // If parsing fails, let the handler deal with it
             }
-            
+
             // If QuoteType is specified, route accordingly
             if (requestBody.QuoteType === 'Official') {
                 return await handleOfficialQuote(event);
             }
-            
+
             // Default to quick quote for backward compatibility
             return await handleQuickQuote(event);
         }
-        
-        // Handle official quote V2 paths (with L2 support)
-        if (path.includes('official-quote-v2')) {
+
+        // Handle official quote V2 paths (with L2 support) - API Gateway or direct
+        if (path === '/fee-calculator/official-quote' || path.includes('official-quote-v2')) {
             return await handleOfficialQuoteV2(event);
         }
-        
+
         // Handle original official quote paths
         if (path.includes('official-quote')) {
             return await handleOfficialQuote(event);

@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fee Calculator Integration Example</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        h1, h2 {
+            color: #333;
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 500;
+        }
+        input, select {
+            width: 100%;
+            padding: 8px 12px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        button {
+            background: #007bff;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .fees-result {
+            margin-top: 20px;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 4px;
+        }
+        .fee-line {
+            display: flex;
+            justify-content: space-between;
+            padding: 5px 0;
+        }
+        .fee-total {
+            font-weight: bold;
+            border-top: 2px solid #ddd;
+            margin-top: 10px;
+            padding-top: 10px;
+        }
+        .error {
+            color: #dc3545;
+            padding: 10px;
+            background: #f8d7da;
+            border-radius: 4px;
+            margin-top: 10px;
+        }
+        .loading {
+            text-align: center;
+            color: #666;
+        }
+        .questions-modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+            z-index: 1000;
+        }
+        .questions-content {
+            background: white;
+            width: 90%;
+            max-width: 500px;
+            margin: 50px auto;
+            padding: 20px;
+            border-radius: 8px;
+        }
+        .question-group {
+            margin-bottom: 15px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>FirstAm Fee Calculator - Web Integration Example</h1>
+
+        <div id="calculator-form">
+            <h2>Enter Transaction Details</h2>
+            <div class="form-group">
+                <label for="zipCode">Property ZIP Code:</label>
+                <input type="text" id="zipCode" value="06901" maxlength="5">
+            </div>
+            <div class="form-group">
+                <label for="purchasePrice">Purchase Price:</label>
+                <input type="number" id="purchasePrice" value="500000">
+            </div>
+            <div class="form-group">
+                <label for="loanAmount">Loan Amount:</label>
+                <input type="number" id="loanAmount" value="400000">
+            </div>
+            <div class="form-group">
+                <label for="transactionType">Transaction Type:</label>
+                <select id="transactionType">
+                    <option value="Purchase">Purchase</option>
+                    <option value="Refinance">Refinance</option>
+                </select>
+            </div>
+            <button onclick="calculateFees()" id="calculateBtn">Calculate Fees</button>
+        </div>
+
+        <div id="loading" class="loading" style="display: none;">
+            <p>Calculating fees...</p>
+        </div>
+
+        <div id="error" class="error" style="display: none;"></div>
+
+        <div id="fees-result" class="fees-result" style="display: none;">
+            <h2>Calculated Fees</h2>
+            <div id="fees-content"></div>
+        </div>
+    </div>
+
+    <!-- Questions Modal -->
+    <div id="questions-modal" class="questions-modal">
+        <div class="questions-content">
+            <h2 id="questions-title">Additional Information Required</h2>
+            <div id="questions-form"></div>
+            <button onclick="submitAnswers()" id="submitBtn">Submit</button>
+            <button onclick="closeModal()">Cancel</button>
+        </div>
+    </div>
+
+    <script>
+        // API Configuration - UPDATE THIS WITH YOUR API URL
+        const API_URL = 'https://dsk3ez6i5c.execute-api.us-east-1.amazonaws.com/prod';
+
+        let currentSession = null;
+        let currentQuestionType = null;
+
+        async function calculateFees() {
+            const zipCode = document.getElementById('zipCode').value;
+            const purchasePrice = document.getElementById('purchasePrice').value;
+            const loanAmount = document.getElementById('loanAmount').value;
+            const transactionType = document.getElementById('transactionType').value;
+
+            if (!zipCode || !purchasePrice || !loanAmount) {
+                showError('Please fill in all fields');
+                return;
+            }
+
+            showLoading(true);
+            hideError();
+            hideResults();
+
+            try {
+                // Start the official quote process
+                const response = await fetch(`${API_URL}/fee-calculator/official-quote`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        action: 'start',
+                        PostalCode: zipCode,
+                        SalesContractAmount: parseFloat(purchasePrice),
+                        NoteAmount: parseFloat(loanAmount),
+                        LoanPurposeType: transactionType,
+                        forceL2Questions: true
+                    })
+                });
+
+                const data = await response.json();
+                console.log('Initial response:', data);
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'Failed to calculate fees');
+                }
+
+                currentSession = data.sessionId;
+
+                if (data.needsManualInput && data.pageQuestions) {
+                    // Show page number questions
+                    showQuestions(data.pageQuestions, 'page');
+                } else if (data.l2Questions && data.l2Questions.length > 0) {
+                    // Show L2 questions
+                    showQuestions(data.l2Questions, 'l2');
+                } else if (data.fees) {
+                    // Display fees
+                    displayFees(data);
+                } else {
+                    // No fees or questions - unexpected
+                    showError('No fees calculated. Please check your inputs.');
+                }
+
+            } catch (error) {
+                console.error('Error:', error);
+                showError(error.message);
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        function showQuestions(questions, type) {
+            currentQuestionType = type;
+            const modal = document.getElementById('questions-modal');
+            const form = document.getElementById('questions-form');
+            const title = document.getElementById('questions-title');
+
+            // Set title based on question type
+            title.textContent = type === 'page' ?
+                'Document Information Required' :
+                'Additional Information Required';
+
+            // Clear previous questions
+            form.innerHTML = '';
+
+            // Build question form
+            questions.forEach(q => {
+                const div = document.createElement('div');
+                div.className = 'question-group';
+
+                const label = document.createElement('label');
+                label.textContent = q.question || q.text;
+                div.appendChild(label);
+
+                const id = q.id || q.paramCode;
+
+                if (q.possibleAnswers || (q.defaultAnswer === 'Y' || q.defaultAnswer === 'N')) {
+                    // Create dropdown for Y/N questions
+                    const select = document.createElement('select');
+                    select.id = `answer-${id}`;
+                    select.innerHTML = `
+                        <option value="Y" ${q.defaultAnswer === 'Y' ? 'selected' : ''}>Yes</option>
+                        <option value="N" ${q.defaultAnswer === 'N' ? 'selected' : ''}>No</option>
+                    `;
+                    div.appendChild(select);
+                } else {
+                    // Create text input
+                    const input = document.createElement('input');
+                    input.type = 'text';
+                    input.id = `answer-${id}`;
+                    input.value = q.defaultAnswer || '';
+                    div.appendChild(input);
+                }
+
+                form.appendChild(div);
+            });
+
+            // Show modal
+            modal.style.display = 'block';
+        }
+
+        async function submitAnswers() {
+            const form = document.getElementById('questions-form');
+            const answers = {};
+
+            // Collect answers
+            const inputs = form.querySelectorAll('input, select');
+            inputs.forEach(input => {
+                const id = input.id.replace('answer-', '');
+                answers[id] = input.value;
+            });
+
+            console.log('Submitting answers:', answers);
+
+            // Close modal
+            closeModal();
+            showLoading(true);
+
+            try {
+                const response = await fetch(`${API_URL}/fee-calculator/official-quote`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        action: 'submit',
+                        sessionId: currentSession,
+                        answers: answers
+                    })
+                });
+
+                const data = await response.json();
+                console.log('Submit response:', data);
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'Failed to submit answers');
+                }
+
+                if (data.l2Questions && data.l2Questions.length > 0) {
+                    // More questions
+                    showQuestions(data.l2Questions, 'l2');
+                } else if (data.fees) {
+                    // Display fees
+                    displayFees(data);
+                } else {
+                    showError('No fees calculated after submission');
+                }
+
+            } catch (error) {
+                console.error('Error:', error);
+                showError(error.message);
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        function displayFees(data) {
+            const feesDiv = document.getElementById('fees-content');
+
+            // Parse fees from response
+            const fees = data.fees || {};
+
+            let html = '';
+
+            // Title fees
+            if (fees.OwnersPolicyAmount || data.OwnersPolicyAmount) {
+                html += '<h3>Title Insurance</h3>';
+                html += `<div class="fee-line">
+                    <span>Owner's Policy:</span>
+                    <span>$${(fees.OwnersPolicyAmount || data.OwnersPolicyAmount || 0).toFixed(2)}</span>
+                </div>`;
+            }
+
+            if (fees.LendersPolicyAmount || data.LendersPolicyAmount) {
+                html += `<div class="fee-line">
+                    <span>Lender's Policy:</span>
+                    <span>$${(fees.LendersPolicyAmount || data.LendersPolicyAmount || 0).toFixed(2)}</span>
+                </div>`;
+            }
+
+            // Settlement fees
+            if (fees.SettlementFee || data.SettlementFee) {
+                html += '<h3>Settlement Fees</h3>';
+                html += `<div class="fee-line">
+                    <span>Settlement Fee:</span>
+                    <span>$${(fees.SettlementFee || data.SettlementFee || 0).toFixed(2)}</span>
+                </div>`;
+            }
+
+            // Recording fees
+            if (fees.RecordingFees || data.RecordingFees) {
+                html += '<h3>Recording Fees</h3>';
+                html += `<div class="fee-line">
+                    <span>Recording Fees:</span>
+                    <span>$${(fees.RecordingFees || data.RecordingFees || 0).toFixed(2)}</span>
+                </div>`;
+            }
+
+            // Total
+            const total = fees.TotalFees || data.TotalFees ||
+                ((fees.OwnersPolicyAmount || data.OwnersPolicyAmount || 0) +
+                 (fees.LendersPolicyAmount || data.LendersPolicyAmount || 0) +
+                 (fees.SettlementFee || data.SettlementFee || 0) +
+                 (fees.RecordingFees || data.RecordingFees || 0));
+
+            html += `<div class="fee-line fee-total">
+                <span>Total Fees:</span>
+                <span>$${total.toFixed(2)}</span>
+            </div>`;
+
+            feesDiv.innerHTML = html;
+            document.getElementById('fees-result').style.display = 'block';
+        }
+
+        function closeModal() {
+            document.getElementById('questions-modal').style.display = 'none';
+        }
+
+        function showLoading(show) {
+            document.getElementById('loading').style.display = show ? 'block' : 'none';
+            document.getElementById('calculateBtn').disabled = show;
+        }
+
+        function showError(message) {
+            const errorDiv = document.getElementById('error');
+            errorDiv.textContent = `Error: ${message}`;
+            errorDiv.style.display = 'block';
+        }
+
+        function hideError() {
+            document.getElementById('error').style.display = 'none';
+        }
+
+        function hideResults() {
+            document.getElementById('fees-result').style.display = 'none';
+        }
+    </script>
+</body>
+</html>
