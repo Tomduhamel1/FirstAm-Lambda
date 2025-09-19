@@ -410,7 +410,7 @@ async function submitAnswersV2(requestBody) {
         }
         
         // Get L1 response data from session
-        const l1Response = session.l1Response;
+        let l1Response = session.l1Response;
         
         if (!l1Response || !l1Response.calcRateLevel2Data) {
             return {
