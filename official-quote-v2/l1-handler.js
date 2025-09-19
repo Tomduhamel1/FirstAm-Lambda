@@ -120,17 +120,9 @@ async function handleL1Request(params) {
             )
         );
         
-        // Skip settlement services for Florida - they don't need closing costs
-        if (stateCode !== 'FL') {
-            const settlementResult = buildSettlementServiceBlock(closingProducts, 2, stateCode);
-            if (settlementResult.xml) {
-                servicesParts.push(settlementResult.xml);
-                currentSeq = settlementResult.nextSeq;
-            }
-        } else {
-            console.info('Skipping settlement services for Florida');
-            currentSeq = 2; // Settlement would have been seq 2, so recording starts at 2
-        }
+        // Skip settlement services for all states - causes errors with invalid closing product IDs
+        console.info(`Skipping settlement services for ${stateCode} - prevents closing product errors`);
+        currentSeq = 2; // Settlement would have been seq 2, so recording starts at 2
         
         const recordingResult = buildRecordingServiceBlock(recordingProducts, currentSeq, pageNumbers, salesAmount, noteAmount);
         if (recordingResult.xml) {
