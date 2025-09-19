@@ -11,7 +11,8 @@ const {
     getL2Session,
     storeL1ResponseData,
     storeUserAnswers,
-    storeFinalRates
+    storeFinalRates,
+    storePageNumbers
 } = require('./session-manager');
 
 /**
@@ -369,7 +370,8 @@ async function updatePagesV2(requestBody) {
  * Submit answers for L2 questions
  */
 async function submitAnswersV2(requestBody) {
-    const { sessionId, answers } = requestBody;
+    const { sessionId, answers: originalAnswers } = requestBody;
+    let answers = originalAnswers;
     
     // Validate required fields
     if (!sessionId || !answers) {
@@ -435,15 +437,71 @@ async function submitAnswersV2(requestBody) {
             };
         }
         
-        // Store answers in session
-        await storeUserAnswers(sessionId, answers);
-        
+        // Extract page numbers from answers if they exist
+        let pageNumbers = session.pageNumbers; // Use stored page numbers as default
+        let needsL1Refresh = false;
+
+        // Check if answers contain page-related fields and extract them
+        if (answers.deedPages || answers.mortgagePages) {
+            pageNumbers = {
+                deedPages: answers.deedPages ? parseInt(answers.deedPages) : 3,
+                mortgagePages: answers.mortgagePages ? parseInt(answers.mortgagePages) : 15,
+                deedConsideration: answers.deedConsideration ? parseInt(answers.deedConsideration) : null,
+                mortgageConsideration: answers.mortgageConsideration ? parseInt(answers.mortgageConsideration) : null
+            };
+
+            console.info('Extracted page numbers from answers:', pageNumbers);
+
+            // Store page numbers in session for future reference
+            await storePageNumbers(sessionId, pageNumbers);
+
+            // Remove page-related fields from answers to avoid confusion with L2 questions
+            const l2Answers = { ...answers };
+            delete l2Answers.deedPages;
+            delete l2Answers.mortgagePages;
+            delete l2Answers.deedConsideration;
+            delete l2Answers.mortgageConsideration;
+
+            // Store L2 answers
+            await storeUserAnswers(sessionId, l2Answers);
+
+            // Use cleaned answers for L2
+            answers = l2Answers;
+
+            // We need to re-run L1 with the page numbers to get correct recording fees
+            needsL1Refresh = true;
+        } else {
+            // Store answers in session as-is
+            await storeUserAnswers(sessionId, answers);
+        }
+
+        // If we have new page numbers, re-run L1 to get updated MISMO with correct recording fees
+        if (needsL1Refresh && pageNumbers) {
+            console.info('Re-running L1 request with page numbers to update recording fees');
+
+            // Re-run L1 with page numbers
+            const updatedL1Result = await handleL1Request({
+                PostalCode: session.PostalCode,
+                SalesContractAmount: session.SalesContractAmount,
+                NoteAmount: session.NoteAmount,
+                LoanPurposeType: session.LoanPurposeType,
+                forceL2Questions: session.forceL2Questions || true,
+                pageNumbers: pageNumbers  // Pass the page numbers to L1
+            });
+
+            // Update the L1 response data in session
+            await storeL1ResponseData(sessionId, updatedL1Result);
+
+            // Use the updated L1 response
+            l1Response = updatedL1Result;
+        }
+
         // Handle L2 request with answers
         const l2Result = await handleL2Request({
             calcRateLevel2Data: l1Response.calcRateLevel2Data,
             originalMISMO: l1Response.originalMISMO,
             userAnswers: answers,
-            pageNumbers: session.pageNumbers // Pass stored page numbers if available
+            pageNumbers: pageNumbers // Pass the page numbers (though L2 doesn't use them directly)
         });
         
         // Store final rates

@@ -186,16 +186,21 @@ function buildRecordingServiceBlock(recordingProducts, currentSeq, pageNumbers =
             // From ProductList (if it ever returns data)
             const id = product['lvis:DocId'] || product['lvis:Id'];
             name = product['lvis:DocName'] || product['lvis:Name'];
-            pages = product['lvis:Pages'] || product['lvis:DefaultPages'] || 1;
-            
+            const defaultPages = product['lvis:Pages'] || product['lvis:DefaultPages'] || 1;
+
             // Map the name to the correct identifier
             // Check mortgage first since "Mortgage (Deed of Trust)" contains both words
             if (name && (name.toLowerCase().includes('mortgage') || name.toLowerCase().includes('trust'))) {
                 identifier = 'MORTGAGE';
+                // Use user-provided page numbers if available
+                pages = pageNumbers?.mortgagePages || defaultPages;
             } else if (name && name.toLowerCase().includes('deed')) {
                 identifier = 'DEED';
+                // Use user-provided page numbers if available
+                pages = pageNumbers?.deedPages || defaultPages;
             } else {
                 identifier = id || `DOC_${index}`;
+                pages = defaultPages;
             }
             labelPrefix = `RECORDING_${index + 1}`;
         }

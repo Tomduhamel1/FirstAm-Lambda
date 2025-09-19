@@ -17,10 +17,14 @@ async function handleL2Request(params) {
     const {
         calcRateLevel2Data,
         originalMISMO,
-        userAnswers
+        userAnswers,
+        pageNumbers = null
     } = params;
-    
+
     console.info('Processing L2 request with user answers');
+    if (pageNumbers) {
+        console.info('Page numbers provided for L2 request:', pageNumbers);
+    }
     
     try {
         // Get OAuth token
