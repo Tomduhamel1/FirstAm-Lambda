@@ -90,12 +90,12 @@ async function handleOfficialQuoteV2(event) {
  * Start a new official quote V2 session
  */
 async function startOfficialQuoteV2(requestBody) {
-    const { 
-        PostalCode, 
-        SalesContractAmount, 
-        NoteAmount, 
+    const {
+        PostalCode,
+        SalesContractAmount,
+        NoteAmount,
         LoanPurposeType,
-        forceL2Questions = false 
+        forceL2Questions = false
     } = requestBody;
     
     // Validate required fields
@@ -147,6 +147,7 @@ async function startOfficialQuoteV2(requestBody) {
                     hasCalculatedRates: true,
                     fees: l1Result.fees,
                     loanComments: l1Result.loanComments,
+                    endorsements: l1Result.endorsements,
                     locationInfo: l1Result.locationData
                 })
             };
@@ -221,6 +222,7 @@ async function startOfficialQuoteV2(requestBody) {
                     message: 'Page numbers required before proceeding',
                     requiresPageNumbers: true,
                     pageQuestions,
+                    endorsements: l1Result.endorsements,
                     locationInfo: l1Result.locationData,
                     expiresIn: '24 hours',
                     nextStep: 'Use updatePages action with page numbers to continue'
@@ -334,7 +336,7 @@ async function updatePagesV2(requestBody) {
         
         // Return updated L2 questions
         const formattedQuestions = formatQuestionsForWebApp(l1Result.questions);
-        
+
         return {
             statusCode: 200,
             headers: getCORSHeaders(),
@@ -343,8 +345,9 @@ async function updatePagesV2(requestBody) {
                 status: 'pending_answers',
                 message: 'Page numbers updated, please answer the following questions',
                 questions: formattedQuestions,
-                pageNumbers: { 
-                    deedPages, 
+                endorsements: l1Result.endorsements,
+                pageNumbers: {
+                    deedPages,
                     mortgagePages,
                     deedConsideration,
                     mortgageConsideration
@@ -501,7 +504,12 @@ async function submitAnswersV2(requestBody) {
             calcRateLevel2Data: l1Response.calcRateLevel2Data,
             originalMISMO: l1Response.originalMISMO,
             userAnswers: answers,
-            pageNumbers: pageNumbers // Pass the page numbers (though L2 doesn't use them directly)
+            pageNumbers: pageNumbers, // Pass the page numbers (though L2 doesn't use them directly)
+            // Pass session data and location for centralized rate integration
+            stateCode: l1Response.locationData?.state,
+            countyName: l1Response.locationData?.county,
+            loanPurposeType: session.LoanPurposeType,
+            noteAmount: session.NoteAmount
         });
         
         // Store final rates

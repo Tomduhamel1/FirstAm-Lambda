@@ -3,14 +3,18 @@ const xml2js = require('xml2js');
 const { v4: uuidv4 } = require('uuid');
 const { getOAuthToken } = require('../shared/auth');
 const { getZipCodeData, getStateFees } = require('../shared/database');
-const { 
+const {
     buildProductListRequestXML,
     buildRateCalcRequestXML,
     parseProductList,
     buildTitleServiceBlock,
     buildSettlementServiceBlock,
-    buildRecordingServiceBlock
+    buildRecordingServiceBlock,
+    buildTransactionTypesRequestXML,
+    parseTransactionTypesResponse
 } = require('../shared/xml-builders');
+const constants = require('../shared/constants');
+const { applyCentralizedRateIfEligible } = require('../shared/centralized-integration');
 
 /**
  * Handle L1 (initial) RateCalc request for official quotes
@@ -28,7 +32,7 @@ async function handleL1Request(params) {
         forceL2Questions = false, // Use RateCalcNoAutoCalc to force L2 questions
         pageNumbers = null // Optional page numbers for recording documents
     } = params;
-    
+
     console.info('L1 Request for official quote:', { PostalCode, LoanPurposeType, forceL2Questions });
     
     try {
@@ -41,12 +45,11 @@ async function handleL1Request(params) {
         
         // Get state fees
         const stateFeeData = await getStateFees(stateCode);
-        
+
         // Prepare transaction details
-        const transactionType = LoanPurposeType === 'Refinance' ? 'Refinance' : 'Sale w/ Mortgage';
         const salesAmount = LoanPurposeType === 'Refinance' ? NoteAmount : SalesContractAmount;
         const noteAmount = Number(NoteAmount) === 0 ? 1000 : Number(NoteAmount);
-        
+
         const effectiveDate = new Date().toLocaleString('en-US', {
             timeZone: 'America/Los_Angeles',
             year: 'numeric',
@@ -57,6 +60,79 @@ async function handleL1Request(params) {
             second: 'numeric',
             hour12: true
         });
+
+        // Discover transaction type dynamically for TN (safe implementation)
+        let transactionType;
+        if (stateCode === 'TN') {
+            try {
+                console.info('🔍 TN detected - discovering available transaction types via TransactionTypes pre-request');
+
+                const transactionTypesRequestXML = buildTransactionTypesRequestXML({
+                    stateCode,
+                    propertyType: 'Residential',
+                    effectiveDate
+                });
+
+                console.info('📄 TransactionTypes Request XML:\n', transactionTypesRequestXML);
+
+                const transactionTypesResponse = await axios.post(
+                    'https://calculator.lvis.firstam.com/ProductList',
+                    transactionTypesRequestXML,
+                    {
+                        headers: {
+                            Authorization: `Bearer ${token}`,
+                            'Content-Type': 'application/xml',
+                        },
+                    }
+                );
+
+                console.info("📦 TransactionTypes raw XML response:\n", transactionTypesResponse.data);
+
+                const parsedTransactionTypes = await xml2js.parseStringPromise(transactionTypesResponse.data, {
+                    explicitArray: false,
+                    ignoreAttrs: false,
+                });
+
+                const availableTypes = parseTransactionTypesResponse(parsedTransactionTypes);
+
+                if (availableTypes.length > 0) {
+                    // Select appropriate type based on LoanPurposeType with smarter matching
+                    if (LoanPurposeType === 'Refinance') {
+                        // Prefer "Property Already Owned" for refinance, then any with "refinance"
+                        transactionType = availableTypes.find(t =>
+                            t.toLowerCase().includes('already owned')
+                        ) || availableTypes.find(t =>
+                            t.toLowerCase().includes('refinance')
+                        ) || availableTypes[0];
+                    } else {
+                        // For Purchase, prefer "Simo" (simultaneous owner + loan), then "purchase", then "sale"
+                        transactionType = availableTypes.find(t =>
+                            t.toLowerCase().includes('simo')
+                        ) || availableTypes.find(t =>
+                            t.toLowerCase().includes('purchase')
+                        ) || availableTypes.find(t =>
+                            t.toLowerCase().includes('sale')
+                        ) || availableTypes[0];
+                    }
+                    console.info(`✅ TN: Using discovered transaction type: "${transactionType}"`);
+                } else {
+                    throw new Error('No transaction types returned');
+                }
+            } catch (error) {
+                // Fallback to hardcoded value if discovery fails
+                console.warn(`⚠️ TN transaction type discovery failed: ${error.message}`);
+                console.warn('Falling back to hardcoded transaction type');
+                const stateSpecificTypes = constants.STATE_TRANSACTION_TYPES[stateCode];
+                transactionType = LoanPurposeType === 'Refinance' ?
+                    (stateSpecificTypes?.REFINANCE || constants.TRANSACTION_TYPES.REFINANCE) :
+                    (stateSpecificTypes?.PURCHASE || constants.TRANSACTION_TYPES.PURCHASE);
+            }
+        } else {
+            // All other states: use existing hardcoded logic
+            transactionType = LoanPurposeType === 'Refinance' ? 'Refinance' : 'Sale w/ Mortgage';
+        }
+
+        console.info(`📋 Using transaction type: "${transactionType}" for ${stateCode}`);
         
         // Step 1: Get Product List (same as quick quote)
         const productListRequestXML = buildProductListRequestXML({
@@ -99,14 +175,28 @@ async function handleL1Request(params) {
             titlePolicies,
             lenderPolicies,
             endorsementProducts,
+            allEndorsements,  // NEW - full endorsement list for feature flag
             closingProducts,
             recordingProducts
-        } = parseProductList(productList);
-        
+        } = parseProductList(productList, transactionType);
+
+        // Log all available endorsements for debugging
+        console.info(`\n📚 AVAILABLE ENDORSEMENTS FOR ${stateCode}: ${allEndorsements.length} total`);
+        if (allEndorsements.length > 0) {
+            console.info('Full endorsement catalog:');
+            allEndorsements.forEach((endr, idx) => {
+                const id = endr['lvis:EndorsementId'];
+                const name = endr['lvis:EndorsementName'] || 'Unknown';
+                const validCategories = endr['lvis:ValidPolicyCategoryIds']?.['lvis:string'];
+                const categories = Array.isArray(validCategories) ? validCategories.join(',') : validCategories;
+                console.info(`  ${idx + 1}. ID ${id}: ${name} (Valid for categories: ${categories})`);
+            });
+        }
+
         // Build services block
         let currentSeq = 1;
         let servicesParts = [];
-        
+
         servicesParts.push(
             buildTitleServiceBlock(
                 titlePolicies,
@@ -116,7 +206,9 @@ async function handleL1Request(params) {
                 salesAmount,
                 new Date().toISOString().split('T')[0],
                 LoanPurposeType,
-                stateCode
+                stateCode,
+                allEndorsements,          // Full endorsements list
+                []                        // Selected endorsement IDs (empty for L1)
             )
         );
         
@@ -205,16 +297,53 @@ async function handleL1Request(params) {
         
         if (hasCalculatedRates) {
             console.info('Rates calculated in L1 response');
-            
+
             // Parse and return rates (similar to quick quote)
             const fees = parseFees(parsedL1Response);
             const loanComments = parseLoanComments(parsedL1Response);
-            
+
+            // Extract endorsement fees from RateCalc response
+            const endorsementFees = extractEndorsementFees(fees);
+            console.info(`📋 Extracted ${endorsementFees.length} endorsement fees from response`);
+
+            // Categorize endorsements with pricing (now that we have fees)
+            const availableEndorsements = allEndorsements.length > 0
+                ? categorizeEndorsements(
+                    titlePolicies,
+                    lenderPolicies,
+                    allEndorsements,
+                    stateCode,
+                    endorsementFees
+                )
+                : { defaults: [], optional: [] };
+
+            console.info(`📚 Categorized endorsements: ${availableEndorsements.defaults.length} defaults, ${availableEndorsements.optional.length} optional`);
+
+            // Apply centralized rates if eligible (refinance + centralized state)
+            const centralizedResult = applyCentralizedRateIfEligible(
+                fees,
+                stateCode,
+                LoanPurposeType,
+                noteAmount,
+                countyName,
+                'raw'
+            );
+
+            // Use centralized fees if applied, otherwise use RateCalc fees
+            const finalFees = centralizedResult.fees;
+
+            if (centralizedResult.centralizedRateApplied) {
+                console.info(`[L1 Handler] Using centralized rate: $${centralizedResult.centralizedRate} for ${stateCode} refinance`);
+            } else {
+                console.info(`[L1 Handler] Using RateCalc fees: ${centralizedResult.reason || 'Not applicable'}`);
+            }
+
             return {
                 type: 'rates',
                 hasCalculatedRates: true,
-                fees,
+                fees: finalFees,
                 loanComments,
+                endorsements: availableEndorsements,
                 locationData: {
                     city,
                     county: countyName,
@@ -223,7 +352,7 @@ async function handleL1Request(params) {
             };
         } else {
             console.info('L2 questions required');
-            
+
             // Parse L2 questions
             const calcRateLevel2Data = calculatorResponse?.['lvis:CalcRateLevel2Data'];
             console.info('CalcRateLevel2Data present:', !!calcRateLevel2Data);
@@ -239,14 +368,28 @@ async function handleL1Request(params) {
             }
             const questions = parseL2Questions(calcRateLevel2Data);
             console.info('Parsed questions count:', questions.length);
-            
+
+            // Categorize endorsements (no pricing yet since no fees in L2 question response)
+            const availableEndorsements = allEndorsements.length > 0
+                ? categorizeEndorsements(
+                    titlePolicies,
+                    lenderPolicies,
+                    allEndorsements,
+                    stateCode,
+                    [] // No fees yet - pricing will be null
+                )
+                : { defaults: [], optional: [] };
+
+            console.info(`📚 Categorized endorsements (no pricing): ${availableEndorsements.defaults.length} defaults, ${availableEndorsements.optional.length} optional`);
+
             // Store original MISMO_XML for L2 request
             const originalMISMO = calculatorResponse?.['lvis:MISMO_XML'];
-            
+
             return {
                 type: 'questions',
                 hasCalculatedRates: false,
                 questions,
+                endorsements: availableEndorsements,
                 calcRateLevel2Data, // Store entire L2 data for echoing back
                 originalMISMO, // Store for L2 request
                 locationData: {
@@ -440,12 +583,169 @@ function parseLoanComments(parsedResponse) {
         const comments = parsedResponse['lvis:LVIS_XML']['lvis:LVIS_CALCULATOR_RESPONSE']['lvis:MISMO_XML']
             ['MESSAGE']['DEAL_SETS']['DEAL_SET']['DEALS']['DEAL']
             ['LOANS']['LOAN']['LOAN_COMMENTS']['LOAN_COMMENT'];
-        
+
         return Array.isArray(comments) ? comments : [comments];
     } catch (error) {
         console.error('Error parsing loan comments:', error);
         return [];
     }
+}
+
+/**
+ * Extract endorsement fees from RateCalc response
+ * Returns array of endorsement fee objects with pricing
+ */
+function extractEndorsementFees(fees) {
+    if (!fees || !Array.isArray(fees)) return [];
+
+    // Filter for endorsement fees - look for ENDR labels or Endorsement in description
+    const endorsementFees = fees.filter(fee => {
+        const label = fee['$']?.['xlink:label'] || '';
+        const feeDetail = Array.isArray(fee['FEE_DETAIL']) ? fee['FEE_DETAIL'][0] : fee['FEE_DETAIL'];
+        const description = feeDetail?.['FeeDescription']?.[0] || '';
+
+        return label.includes('ENDR') || description.includes('Endorsement');
+    });
+
+    console.info(`Found ${endorsementFees.length} endorsement fees in RateCalc response`);
+
+    // Extract pricing for each endorsement
+    return endorsementFees.map(fee => {
+        const label = fee['$']['xlink:label'];
+        const feeDetail = Array.isArray(fee['FEE_DETAIL']) ? fee['FEE_DETAIL'][0] : fee['FEE_DETAIL'];
+        const feePayments = fee['FEE_PAYMENTS'][0]['FEE_PAYMENT'];
+
+        // Extract amounts using same pattern as other fees
+        const buyerActualPayment = feePayments.find(p => p['$']['SequenceNumber'] === '1');
+        const buyerActual = buyerActualPayment ? parseFloat(buyerActualPayment['FeeActualPaymentAmount'][0]) || 0 : 0;
+
+        const sellerActualPayment = feePayments.find(p => p['$']['SequenceNumber'] === '2');
+        const sellerActual = sellerActualPayment ? parseFloat(sellerActualPayment['FeeActualPaymentAmount'][0]) || 0 : 0;
+
+        const buyerDisclosedPayment = feePayments.find(p => p['$']['SequenceNumber'] === '3');
+        const buyerDisclosed = buyerDisclosedPayment ? parseFloat(buyerDisclosedPayment['FeeEstimatedPaymentAmount'][0]) || 0 : 0;
+
+        const sellerDisclosedPayment = feePayments.find(p => p['$']['SequenceNumber'] === '4');
+        const sellerDisclosed = sellerDisclosedPayment ? parseFloat(sellerDisclosedPayment['FeeEstimatedPaymentAmount'][0]) || 0 : 0;
+
+        const totalActual = buyerActual + sellerActual;
+        const totalDisclosed = buyerDisclosed + sellerDisclosed;
+        const variance = totalActual - totalDisclosed;
+        const variancePercent = totalDisclosed > 0 ? (variance / totalDisclosed) * 100 : 0;
+
+        return {
+            label,
+            name: feeDetail['FeeDescription']?.[0] || feeDetail['DisclosureItemName']?.[0] || 'Unknown Endorsement',
+            pricing: {
+                buyerActual: buyerActual.toFixed(2),
+                buyerDisclosed: buyerDisclosed.toFixed(2),
+                sellerActual: sellerActual.toFixed(2),
+                sellerDisclosed: sellerDisclosed.toFixed(2),
+                totalActual: totalActual.toFixed(2),
+                totalDisclosed: totalDisclosed.toFixed(2),
+                variance: variance.toFixed(2),
+                variancePercent: parseFloat(variancePercent.toFixed(2))
+            }
+        };
+    });
+}
+
+/**
+ * Categorize endorsements into defaults and optional WITH PRICING
+ * Returns structured metadata for each endorsement including fees
+ */
+function categorizeEndorsements(titlePolicies, lenderPolicies, allEndorsements, stateCode, endorsementFees = []) {
+    // Extract default endorsement IDs from policies
+    const defaultIds = new Set();
+
+    // Get defaults from title (owner's) policies
+    titlePolicies.forEach(policy => {
+        const defaultEndorsementIds = policy['lvis:DefaultEndorsementIds'];
+        if (defaultEndorsementIds && defaultEndorsementIds['lvis:string']) {
+            const ids = Array.isArray(defaultEndorsementIds['lvis:string'])
+                ? defaultEndorsementIds['lvis:string']
+                : [defaultEndorsementIds['lvis:string']];
+            ids.forEach(id => defaultIds.add(id));
+        }
+    });
+
+    // Get defaults from lender policies
+    lenderPolicies.forEach(policy => {
+        const defaultEndorsementIds = policy['lvis:DefaultEndorsementIds'];
+        if (defaultEndorsementIds && defaultEndorsementIds['lvis:string']) {
+            const ids = Array.isArray(defaultEndorsementIds['lvis:string'])
+                ? defaultEndorsementIds['lvis:string']
+                : [defaultEndorsementIds['lvis:string']];
+            ids.forEach(id => defaultIds.add(id));
+        }
+    });
+
+    console.info(`Found ${defaultIds.size} default endorsement IDs across all policies`);
+
+    // Map category IDs to readable names
+    const mapPolicyCategories = (validCategoryIds) => {
+        if (!validCategoryIds) return 'unknown';
+
+        const categories = Array.isArray(validCategoryIds['lvis:string'])
+            ? validCategoryIds['lvis:string']
+            : [validCategoryIds['lvis:string']];
+
+        if (categories.includes('-1')) return 'all';
+
+        const names = [];
+        if (categories.includes('1')) names.push('owner');
+        if (categories.includes('2')) names.push('lender');
+
+        return names.length > 0 ? names.join(',') : 'unknown';
+    };
+
+    // Categorize endorsements with pricing
+    const defaults = [];
+    const optional = [];
+
+    allEndorsements.forEach(endorsement => {
+        const id = endorsement['lvis:EndorsementId'];
+        const name = endorsement['lvis:EndorsementName'] || 'Unknown';
+        const validCategories = mapPolicyCategories(endorsement['lvis:ValidPolicyCategoryIds']);
+
+        // Try to match with fee data - match by name since we don't have ID in fee labels
+        const matchingFee = endorsementFees.find(fee => {
+            // Try exact name match first
+            if (fee.name === name) return true;
+            // Try partial name match (endorsement name might be prefix of fee name)
+            if (fee.name.includes(name) || name.includes(fee.name)) return true;
+            return false;
+        });
+
+        const metadata = {
+            id,
+            name,
+            validFor: validCategories,
+            stateCode
+        };
+
+        // Add pricing if we found a matching fee
+        if (matchingFee) {
+            metadata.pricing = matchingFee.pricing;
+        } else {
+            // No fee found - endorsement may be included in policy or not requested
+            metadata.pricing = null;
+        }
+
+        if (defaultIds.has(id)) {
+            defaults.push(metadata);
+        } else {
+            optional.push(metadata);
+        }
+    });
+
+    console.info(`Categorized: ${defaults.length} defaults, ${optional.length} optional`);
+    console.info(`Matched pricing for ${defaults.filter(d => d.pricing).length + optional.filter(o => o.pricing).length} endorsements`);
+
+    return {
+        defaults,
+        optional
+    };
 }
 
 module.exports = {
