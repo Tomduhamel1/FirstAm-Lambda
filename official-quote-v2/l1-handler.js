@@ -339,6 +339,13 @@ async function handleL1Request(params) {
                 console.info(`[L1 Handler] Using RateCalc fees: ${centralizedResult.reason || 'Not applicable'}`);
             }
 
+            // Add default endorsement fees to the fees array
+            const endorsementFeeLineItems = buildEndorsementFeeLineItems(availableEndorsements.defaults);
+            if (endorsementFeeLineItems.length > 0) {
+                console.info(`Adding ${endorsementFeeLineItems.length} default endorsement fees to fees array`);
+                finalFees.push(...endorsementFeeLineItems);
+            }
+
             return {
                 type: 'rates',
                 hasCalculatedRates: true,
@@ -747,6 +754,35 @@ function categorizeEndorsements(titlePolicies, lenderPolicies, allEndorsements, 
         defaults,
         optional
     };
+}
+
+/**
+ * Build endorsement fee line items for inclusion in main fees array
+ * Converts default endorsements with pricing into fee objects matching the standard fee format
+ */
+function buildEndorsementFeeLineItems(defaultEndorsements) {
+    return defaultEndorsements
+        .filter(endorsement => endorsement.pricing !== null)  // Only include endorsements with pricing
+        .map(endorsement => {
+            const pricing = endorsement.pricing;
+            return {
+                FeeDescription: `Title - Endorsement: ${endorsement.name}`,
+                DisclosureItemName: `Title - Endorsement: ${endorsement.name}`,
+                HUDLine: "",
+                DisclosureSection: "B or C",
+                DisclosureSectionName: "Title Services - Endorsements",
+                Buyer: {
+                    actualAmount: pricing.buyerActual,
+                    disclosedAmount: pricing.buyerDisclosed
+                },
+                Seller: {
+                    actualAmount: pricing.sellerActual,
+                    disclosedAmount: pricing.sellerDisclosed
+                },
+                TotalActual: pricing.totalActual,
+                TotalDisclosed: pricing.totalDisclosed
+            };
+        });
 }
 
 module.exports = {
