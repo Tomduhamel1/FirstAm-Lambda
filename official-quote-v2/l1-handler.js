@@ -207,6 +207,7 @@ async function handleL1Request(params) {
                 new Date().toISOString().split('T')[0],
                 LoanPurposeType,
                 stateCode,
+                true,                     // includeEndorsements flag
                 allEndorsements,          // Full endorsements list
                 []                        // Selected endorsement IDs (empty for L1)
             )

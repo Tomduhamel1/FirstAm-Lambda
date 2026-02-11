@@ -240,6 +240,7 @@ async function handleEnhancedQuote(event) {
                 new Date().toISOString().split('T')[0],
                 LoanPurposeType,
                 stateCode,
+                true,                     // includeEndorsements flag
                 allEndorsements,          // Full endorsements list
                 selectedIds               // User-selected endorsement IDs (beyond defaults)
             )
@@ -399,6 +400,16 @@ async function handleEnhancedQuote(event) {
 
         const loanCommentsContainer = Array.isArray(loan['LOAN_COMMENTS']) ? loan['LOAN_COMMENTS'][0] : loan['LOAN_COMMENTS'];
         const loanComments = loanCommentsContainer ? loanCommentsContainer['LOAN_COMMENT'] : [];
+
+        // Log all fee labels for debugging
+        console.info(`🔍 Total fees in response: ${fees.length}`);
+        console.info(`📋 All fee labels from FirstAm:`);
+        fees.forEach((fee, index) => {
+            const label = fee['$']?.['xlink:label'] || 'NO_LABEL';
+            const feeDetail = Array.isArray(fee['FEE_DETAIL']) ? fee['FEE_DETAIL'][0] : fee['FEE_DETAIL'];
+            const description = feeDetail?.['FeeDescription']?.[0] || 'NO_DESC';
+            console.info(`   ${index + 1}. Label: "${label}", Description: "${description}"`);
+        });
 
         // Extract endorsement fees from RateCalc response
         const endorsementFees = extractEndorsementFees(fees);
