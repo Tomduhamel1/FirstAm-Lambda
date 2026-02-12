@@ -445,7 +445,14 @@ async function handleQuickQuote(event) {
             console.info(`[Quick Quote] Using RateCalc fees: ${centralizedResult.reason || 'Not applicable'}`);
         }
 
-        // Calculate total buyer fee
+        // Extract and add combined endorsement fees
+        const combinedEndorsementFee = extractCombinedEndorsementFees(fees, titlePolicies, lenderPolicies);
+        if (combinedEndorsementFee) {
+            console.info(`✅ Adding combined endorsement line item: $${combinedEndorsementFee.BuyerFee} buyer, $${combinedEndorsementFee.SellerFee} seller`);
+            finalFees.push(combinedEndorsementFee);
+        }
+
+        // Calculate total buyer fee (now includes endorsements)
         const totalBuyerFee = finalFees.reduce((sum, fee) => sum + parseFloat(fee.BuyerFee), 0);
 
         // Extract and clean loan comment text
@@ -485,6 +492,94 @@ async function handleQuickQuote(event) {
             }),
         };
     }
+}
+
+/**
+ * Extract and sum all default endorsement fees into a single combined line item
+ * @param {Array} fees - All fees from RateCalc response
+ * @param {Array} titlePolicies - Title (owner's) policies with default endorsement IDs
+ * @param {Array} lenderPolicies - Lender policies with default endorsement IDs
+ * @returns {Object|null} Combined endorsement fee object or null if no endorsements
+ */
+function extractCombinedEndorsementFees(fees, titlePolicies, lenderPolicies) {
+    // Extract default endorsement IDs from policies
+    const defaultIds = new Set();
+
+    // Get defaults from title (owner's) policies
+    titlePolicies.forEach(policy => {
+        const defaultEndorsementIds = policy['lvis:DefaultEndorsementIds'];
+        if (defaultEndorsementIds && defaultEndorsementIds['lvis:string']) {
+            const ids = Array.isArray(defaultEndorsementIds['lvis:string'])
+                ? defaultEndorsementIds['lvis:string']
+                : [defaultEndorsementIds['lvis:string']];
+            ids.forEach(id => defaultIds.add(id));
+        }
+    });
+
+    // Get defaults from lender policies
+    lenderPolicies.forEach(policy => {
+        const defaultEndorsementIds = policy['lvis:DefaultEndorsementIds'];
+        if (defaultEndorsementIds && defaultEndorsementIds['lvis:string']) {
+            const ids = Array.isArray(defaultEndorsementIds['lvis:string'])
+                ? defaultEndorsementIds['lvis:string']
+                : [defaultEndorsementIds['lvis:string']];
+            ids.forEach(id => defaultIds.add(id));
+        }
+    });
+
+    console.info(`📋 Found ${defaultIds.size} default endorsement IDs from policies`);
+
+    if (defaultIds.size === 0) {
+        console.info('ℹ️ No default endorsements for this state/transaction');
+        return null;
+    }
+
+    // Find all endorsement fees in the response (labels with "ENDR")
+    const endorsementFees = fees.filter(fee => {
+        const label = fee['$']?.['xlink:label'] || '';
+        return label.includes('ENDR');
+    });
+
+    console.info(`📋 Found ${endorsementFees.length} endorsement fees in RateCalc response`);
+
+    if (endorsementFees.length === 0) {
+        console.info('ℹ️ No endorsement fees in response (endorsements may not have been sent to FirstAm)');
+        return null;
+    }
+
+    // Sum up all endorsement fees
+    let totalBuyerFee = 0;
+    let totalSellerFee = 0;
+
+    endorsementFees.forEach(fee => {
+        const feePayments = fee['FEE_PAYMENTS'][0]['FEE_PAYMENT'];
+
+        // Buyer actual (sequence 1)
+        const buyerPayment = feePayments.find(p => p['$']['SequenceNumber'] === '1');
+        if (buyerPayment) {
+            totalBuyerFee += parseFloat(buyerPayment['FeeActualPaymentAmount'][0]) || 0;
+        }
+
+        // Seller actual (sequence 2)
+        const sellerPayment = feePayments.find(p => p['$']['SequenceNumber'] === '2');
+        if (sellerPayment) {
+            totalSellerFee += parseFloat(sellerPayment['FeeActualPaymentAmount'][0]) || 0;
+        }
+    });
+
+    console.info(`💰 Total endorsement fees - Buyer: $${totalBuyerFee.toFixed(2)}, Seller: $${totalSellerFee.toFixed(2)}`);
+
+    // Only return if there's a non-zero fee
+    if (totalBuyerFee === 0 && totalSellerFee === 0) {
+        console.info('ℹ️ Endorsement fees are $0 - skipping line item');
+        return null;
+    }
+
+    return {
+        FeeDescription: 'Endorsements',
+        BuyerFee: totalBuyerFee.toFixed(2),
+        SellerFee: totalSellerFee.toFixed(2)
+    };
 }
 
 function extractFees({ fees, loanComments, LoanPurposeType, PostalCode, SalesContractAmount, stateFeeData }) {
