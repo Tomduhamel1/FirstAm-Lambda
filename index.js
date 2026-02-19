@@ -1,6 +1,10 @@
 const { handleQuickQuote } = require('./quick-quote/handler');
 const { handleOfficialQuote } = require('./official-quote/handler');
 const { handleOfficialQuoteV2 } = require('./official-quote-v2/handler'); // New L2 implementation
+const { handleEnhancedQuote } = require('./enhanced-quote/handler'); // Enhanced quote with actual and disclosed amounts
+const { handleGreenlightRequest } = require('./greenlight/handler'); // Greenlight API integration
+const { handleAgentNetQuote } = require('./agentnet/handler'); // AgentNet standalone quote (isolated system)
+const { handleCentralizedRate } = require('./centralized-rates/handler'); // Centralized loan rates (44 states, instant calculation)
 
 /**
  * Main Lambda handler that routes requests to appropriate quote handlers
@@ -23,16 +27,48 @@ exports.handler = async (event) => {
             statusCode: 200,
             headers: {
                 'Access-Control-Allow-Origin': '*',
-                'Access-Control-Allow-Headers': 'Content-Type',
+                'Access-Control-Allow-Headers': 'Content-Type, Authorization',
                 'Access-Control-Allow-Methods': 'OPTIONS,POST,GET'
             },
             body: ''
         };
     }
-    
+
     try {
         // Route based on path or request type
-        // Handle API Gateway paths
+        // Check specific paths first before catch-all logic
+
+        // Handle Greenlight API paths (/Token, /Direct/*)
+        if (path === '/Token' || path.includes('/Direct/')) {
+            return await handleGreenlightRequest(event);
+        }
+
+        // Handle AgentNet quote paths (standalone system - isolated from RateCalc)
+        if (path.includes('agentnet-quote')) {
+            return await handleAgentNetQuote(event);
+        }
+
+        // Handle Centralized Rate paths (standalone calculator - 44 states, instant)
+        if (path.includes('centralized-rate')) {
+            return await handleCentralizedRate(event);
+        }
+
+        // Handle enhanced quote paths (with actual and disclosed amounts)
+        if (path.includes('enhanced-quote')) {
+            return await handleEnhancedQuote(event);
+        }
+
+        // Handle official quote V2 paths (with L2 support) - API Gateway or direct
+        if (path === '/fee-calculator/official-quote' || path.includes('official-quote-v2')) {
+            return await handleOfficialQuoteV2(event);
+        }
+
+        // Handle original official quote paths
+        if (path.includes('official-quote')) {
+            return await handleOfficialQuote(event);
+        }
+
+        // Handle API Gateway paths - Quick Quote (default/catch-all)
         if (path === '/fee-calculator/quick-quote' || path === '/' || path === '/quick-quote' || !path.includes('official')) {
             // Check if the request body indicates an official quote
             let requestBody = {};
@@ -50,28 +86,18 @@ exports.handler = async (event) => {
             // Default to quick quote for backward compatibility
             return await handleQuickQuote(event);
         }
-
-        // Handle official quote V2 paths (with L2 support) - API Gateway or direct
-        if (path === '/fee-calculator/official-quote' || path.includes('official-quote-v2')) {
-            return await handleOfficialQuoteV2(event);
-        }
-
-        // Handle original official quote paths
-        if (path.includes('official-quote')) {
-            return await handleOfficialQuote(event);
-        }
         
         // Unknown path
         return {
             statusCode: 404,
             headers: {
                 'Access-Control-Allow-Origin': '*',
-                'Access-Control-Allow-Headers': 'Content-Type',
+                'Access-Control-Allow-Headers': 'Content-Type, Authorization',
                 'Access-Control-Allow-Methods': 'OPTIONS,POST,GET'
             },
             body: JSON.stringify({
                 error: 'Not Found',
-                message: `Path ${path} not found. Available endpoints: /, /quick-quote, /official-quote, /official-quote-v2`
+                message: `Path ${path} not found. Available endpoints: /, /quick-quote, /official-quote, /official-quote-v2, /enhanced-quote, /agentnet-quote, /centralized-rate, /Token, /Direct/CreateQuoteExtended, /Direct/CreateQuoteExtendedVal, /Direct/CreateQuoteFIPS`
             })
         };
         
@@ -81,7 +107,7 @@ exports.handler = async (event) => {
             statusCode: 500,
             headers: {
                 'Access-Control-Allow-Origin': '*',
-                'Access-Control-Allow-Headers': 'Content-Type',
+                'Access-Control-Allow-Headers': 'Content-Type, Authorization',
                 'Access-Control-Allow-Methods': 'OPTIONS,POST,GET'
             },
             body: JSON.stringify({
