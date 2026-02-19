@@ -814,6 +814,26 @@ function extractEnhancedFees({ fees, loanComments, LoanPurposeType, PostalCode, 
         if (ownerPolicy) {
             ownerPolicy.FeeDescription = "Title - Owner's Title Insurance";
             enhancedFees.push(ownerPolicy);
+        } else {
+            // Add placeholder for states with centralized rates or simple XML structure (like TN)
+            // This will be updated by centralized rate integration if applicable
+            enhancedFees.push({
+                FeeDescription: "Title - Owner's Title Insurance",
+                DisclosureItemName: "Owner's Title Insurance (Eagle Owner's Policy)",
+                HUDLine: "HUD-1 Line 1103",
+                DisclosureSection: "H",
+                DisclosureSectionName: "Owner's Title Insurance",
+                Buyer: {
+                    actualAmount: "0.00",
+                    disclosedAmount: "0.00"
+                },
+                Seller: {
+                    actualAmount: "0.00",
+                    disclosedAmount: "0.00"
+                },
+                TotalActual: "0.00",
+                TotalDisclosed: "0.00"
+            });
         }
     }
 
@@ -823,6 +843,26 @@ function extractEnhancedFees({ fees, loanComments, LoanPurposeType, PostalCode, 
     if (lenderPolicy) {
         lenderPolicy.FeeDescription = "Title - Lender's Title Insurance";
         enhancedFees.push(lenderPolicy);
+    } else {
+        // Add placeholder for states with centralized rates or simple XML structure (like TN)
+        // This will be updated by centralized rate integration if applicable
+        enhancedFees.push({
+            FeeDescription: "Title - Lender's Title Insurance",
+            DisclosureItemName: "Lender's Title Insurance",
+            HUDLine: "HUD-1 Line 1104",
+            DisclosureSection: "C",
+            DisclosureSectionName: "Title Services",
+            Buyer: {
+                actualAmount: "0.00",
+                disclosedAmount: "0.00"
+            },
+            Seller: {
+                actualAmount: "0.00",
+                disclosedAmount: "0.00"
+            },
+            TotalActual: "0.00",
+            TotalDisclosed: "0.00"
+        });
     }
 
     // Settlement fees (from DynamoDB, not FirstAm)
@@ -854,6 +894,25 @@ function extractEnhancedFees({ fees, loanComments, LoanPurposeType, PostalCode, 
         if (ownerTax) {
             ownerTax.FeeDescription = "Title - Sales Tax - Owner's Title Insurance";
             enhancedFees.push(ownerTax);
+        } else {
+            // Add placeholder for consistency
+            enhancedFees.push({
+                FeeDescription: "Title - Sales Tax - Owner's Title Insurance",
+                DisclosureItemName: "Sales Tax on Owner's Title Insurance",
+                HUDLine: "",
+                DisclosureSection: "",
+                DisclosureSectionName: "",
+                Buyer: {
+                    actualAmount: "0.00",
+                    disclosedAmount: "0.00"
+                },
+                Seller: {
+                    actualAmount: "0.00",
+                    disclosedAmount: "0.00"
+                },
+                TotalActual: "0.00",
+                TotalDisclosed: "0.00"
+            });
         }
     }
 
@@ -862,6 +921,25 @@ function extractEnhancedFees({ fees, loanComments, LoanPurposeType, PostalCode, 
     if (lenderTax) {
         lenderTax.FeeDescription = "Title - Sales Tax - Lender's Title Insurance";
         enhancedFees.push(lenderTax);
+    } else {
+        // Add placeholder for consistency
+        enhancedFees.push({
+            FeeDescription: "Title - Sales Tax - Lender's Title Insurance",
+            DisclosureItemName: "Sales Tax on Lender's Title Insurance",
+            HUDLine: "",
+            DisclosureSection: "",
+            DisclosureSectionName: "",
+            Buyer: {
+                actualAmount: "0.00",
+                disclosedAmount: "0.00"
+            },
+            Seller: {
+                actualAmount: "0.00",
+                disclosedAmount: "0.00"
+            },
+            TotalActual: "0.00",
+            TotalDisclosed: "0.00"
+        });
     }
 
     // Recording fees
