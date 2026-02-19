@@ -50,7 +50,8 @@ async function handleEnhancedQuote(event) {
     }
 
     const normalizedZip = PostalCode.toString().padStart(5, '0');
-    let noteAmount = Number(NoteAmount) === 0 ? constants.DEFAULT_NOTE_AMOUNT : Number(NoteAmount);
+    const originalNoteAmount = Number(NoteAmount);
+    let noteAmount = originalNoteAmount === 0 ? constants.DEFAULT_NOTE_AMOUNT : originalNoteAmount;
     let salesAmount = LoanPurposeType === 'Refinance' ? noteAmount : Number(SalesContractAmount);
 
     try {
@@ -229,6 +230,9 @@ async function handleEnhancedQuote(event) {
         let currentSeq = 1;
         let servicesParts = [];
 
+        // Disable endorsements for refinances (all states) and all TX transactions
+        const shouldIncludeEndorsements = LoanPurposeType !== 'Refinance' && stateCode !== 'TX';
+
         // Title block (always Sequence 1)
         servicesParts.push(
             buildTitleServiceBlock(
@@ -240,9 +244,10 @@ async function handleEnhancedQuote(event) {
                 new Date().toISOString().split('T')[0],
                 LoanPurposeType,
                 stateCode,
-                true,                     // includeEndorsements flag
-                allEndorsements,          // Full endorsements list
-                selectedIds               // User-selected endorsement IDs (beyond defaults)
+                shouldIncludeEndorsements, // Disable for refinances and TX to prevent API errors
+                allEndorsements,           // Full endorsements list
+                selectedIds,               // User-selected endorsement IDs (beyond defaults)
+                transactionType            // Transaction type for TN and other states
             )
         );
 
@@ -251,7 +256,13 @@ async function handleEnhancedQuote(event) {
         currentSeq = 2; // Settlement would have been seq 2, so recording starts at 2
 
         // Recording blocks
-        const recordingResult = buildRecordingServiceBlock(recordingProducts, currentSeq);
+        const recordingResult = buildRecordingServiceBlock(
+            recordingProducts,
+            currentSeq,
+            {deedPages: 3, mortgagePages: 15},  // Default page counts for enhanced-quote
+            salesAmount,                         // Sales contract amount for consideration
+            noteAmount                           // Note amount for consideration
+        );
         if (recordingResult.xml) {
             servicesParts.push(recordingResult.xml);
         }
@@ -450,6 +461,22 @@ async function handleEnhancedQuote(event) {
 
         // Use centralized fees if applied, otherwise use RateCalc fees
         const finalFees = centralizedResult.fees;
+
+        // Zero out lender's policy amounts if original NoteAmount was 0 (cash deal)
+        if (originalNoteAmount === 0 && LoanPurposeType !== 'Cash Purchase') {
+            console.info(`💰 NoteAmount was 0 - zeroing out lender's policy amounts for backward compatibility`);
+            finalFees.forEach(fee => {
+                if (fee.FeeDescription && fee.FeeDescription.includes('Lender')) {
+                    console.info(`   Zeroing: ${fee.FeeDescription}`);
+                    fee.Buyer.actualAmount = "0.00";
+                    fee.Buyer.disclosedAmount = "0.00";
+                    fee.Seller.actualAmount = "0.00";
+                    fee.Seller.disclosedAmount = "0.00";
+                    fee.TotalActual = "0.00";
+                    fee.TotalDisclosed = "0.00";
+                }
+            });
+        }
 
         if (centralizedResult.centralizedRateApplied) {
             console.info(`[Enhanced Quote] Using centralized rate: $${centralizedResult.centralizedRate} for ${stateCode} refinance`);

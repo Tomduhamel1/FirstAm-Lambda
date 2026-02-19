@@ -48,7 +48,8 @@ async function handleL1Request(params) {
 
         // Prepare transaction details
         const salesAmount = LoanPurposeType === 'Refinance' ? NoteAmount : SalesContractAmount;
-        const noteAmount = Number(NoteAmount) === 0 ? 1000 : Number(NoteAmount);
+        const originalNoteAmount = Number(NoteAmount);
+        const noteAmount = originalNoteAmount === 0 ? 1000 : originalNoteAmount;
 
         const effectiveDate = new Date().toLocaleString('en-US', {
             timeZone: 'America/Los_Angeles',
@@ -157,7 +158,10 @@ async function handleL1Request(params) {
                 },
             }
         );
-        
+
+        // Log full ProductList response for debugging
+        console.info('📦 ProductList raw XML response:\n', productListResponse.data);
+
         const parsedProductList = await xml2js.parseStringPromise(productListResponse.data, {
             explicitArray: false,
             ignoreAttrs: false,
@@ -207,9 +211,10 @@ async function handleL1Request(params) {
                 new Date().toISOString().split('T')[0],
                 LoanPurposeType,
                 stateCode,
-                true,                     // includeEndorsements flag
+                LoanPurposeType !== 'Refinance' && stateCode !== 'TX', // Disable endorsements for refinances and TX
                 allEndorsements,          // Full endorsements list
-                []                        // Selected endorsement IDs (empty for L1)
+                [],                       // Selected endorsement IDs (empty for L1)
+                transactionType           // Transaction type for TN and other states
             )
         );
         
@@ -240,8 +245,8 @@ async function handleL1Request(params) {
         });
         
         console.info(`Sending L1 RateCalc request (${actionType})...`);
-        // Log first 500 chars of request for debugging
-        console.info('Request XML (first 500 chars):', requestXML.substring(0, 500));
+        // Log full request XML for debugging
+        console.info('📤 Full RateCalc Request XML:\n', requestXML);
         
         const l1Response = await axios.post(
             'https://calculator.lvis.firstam.com/',
@@ -356,7 +361,13 @@ async function handleL1Request(params) {
                     city,
                     county: countyName,
                     state: stateCode
-                }
+                },
+                // Pass metadata needed for fee processing in handler.js
+                stateCode,
+                loanPurposeType: LoanPurposeType,
+                noteAmount,
+                originalNoteAmount,  // For zeroing out lender's policy on cash deals
+                parties: parsedL1Response['lvis:MESSAGE']?.['lvis:DEAL_SETS']?.['lvis:DEAL_SET']?.['lvis:DEALS']?.['lvis:DEAL']?.['lvis:PARTIES']?.['lvis:PARTY'] || []
             };
         } else {
             console.info('L2 questions required');
@@ -404,7 +415,12 @@ async function handleL1Request(params) {
                     city,
                     county: countyName,
                     state: stateCode
-                }
+                },
+                // Pass metadata for L2 handler
+                stateCode,
+                loanPurposeType: LoanPurposeType,
+                noteAmount,
+                originalNoteAmount  // For zeroing out lender's policy on cash deals
             };
         }
         

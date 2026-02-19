@@ -27,6 +27,15 @@ module.exports = {
         CASH_PURCHASE: 'Sale w/ Mortgage',
         REFINANCE: 'Refinance'
     },
+
+    // State-specific transaction types (override defaults)
+    STATE_TRANSACTION_TYPES: {
+        'TN': {
+            PURCHASE: 'Purchase',
+            CASH_PURCHASE: 'Purchase',
+            REFINANCE: 'Refinance'
+        }
+    },
     
     // Property Types
     PROPERTY_TYPE: 'Residential',

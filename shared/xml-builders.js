@@ -9,9 +9,36 @@ function buildTitleServiceBlock(
     effectiveDate,
     LoanPurposeType,
     stateCode,
+    includeEndorsements = false,  // Feature flag for endorsements
     allEndorsementsList = [],
-    selectedEndorsementIds = []
+    selectedEndorsementIds = [],
+    transactionType = null  // Transaction type from ProductList API
 ) {
+    // TN requires simple SERVICE_PRODUCT_FULFILLMENT structure instead of complex TITLE block
+    const useSimpleStructure = stateCode === 'TN';
+
+    if (useSimpleStructure) {
+        console.info(`🔧 Using simple SERVICE_PRODUCT_FULFILLMENT structure for transaction type: "${transactionType}"`);
+
+        // Simple structure used by TN and similar states
+        return `<SERVICE SequenceNumber="1">
+  <SERVICE_PRODUCT>
+    <SERVICE_PRODUCT_REQUEST>
+      <SERVICE_PRODUCT_DETAIL>
+        <ServiceProductDescription>Title Insurance</ServiceProductDescription>
+      </SERVICE_PRODUCT_DETAIL>
+      <SERVICE_PRODUCT_FULFILLMENT>
+        <SERVICE_PRODUCT_FULFILLMENT_DETAIL>
+          <ProductAmountDescription>${transactionType}</ProductAmountDescription>
+        </SERVICE_PRODUCT_FULFILLMENT_DETAIL>
+      </SERVICE_PRODUCT_FULFILLMENT>
+    </SERVICE_PRODUCT_REQUEST>
+  </SERVICE_PRODUCT>
+</SERVICE>`;
+    }
+
+    // Complex TITLE block structure for other states
+    console.info(`🔧 Using complex TITLE block structure`);
     let seq = 1;
     let xml = `<SERVICE SequenceNumber="${seq++}"><TITLE><TITLE_RESPONSE><TITLE_PRODUCTS><TITLE_PRODUCT><TITLE_POLICIES>`;
 
@@ -103,6 +130,7 @@ function buildTitleServiceBlock(
                 // Define priority order for rate type selection (Key => Name mapping)
                 const ratePriority = [
                     { key: '2', name: 'Reissue', discount: '30-40%' },
+                    { key: '3', name: 'Refinance', discount: '40%' },  // Added after testing RI - saves $500!
                     { key: '129', name: 'Bundled Loan - Refinance', discount: 'varies' },
                     { key: '272', name: 'Non Bundled Loan - Refinance', discount: 'varies' },
                     { key: '1', name: 'Basic', discount: 'none' }
@@ -173,8 +201,11 @@ function buildTitleServiceBlock(
                 }
             }
 
-            // Get endorsements for this policy - includes both defaults and user-selected endorsements
-            const policyEndorsements = getEndorsementsForPolicy(p, allEndorsementsList, selectedEndorsementIds);
+            // Get endorsements for this policy if flag is enabled
+            // Includes both defaults and user-selected endorsements
+            const policyEndorsements = includeEndorsements
+                ? getEndorsementsForPolicy(p, allEndorsementsList, selectedEndorsementIds)
+                : [];
             const endorsementsXML = buildEndorsementsXML(policyEndorsements, i + 2);
 
             return `
@@ -255,9 +286,9 @@ function buildRecordingServiceBlock(recordingProducts, currentSeq, pageNumbers =
     // use standard recording documents based on the simulator
     if (!recordingProducts || !recordingProducts.length) {
         // Default recording products for Purchase/Refinance transactions
-        // Use provided page numbers or defaults
-        const deedPages = pageNumbers?.deedPages || 3;
-        const mortgagePages = pageNumbers?.mortgagePages || 15;
+        // Use provided page numbers or defaults (4 deed, 25 mortgage)
+        const deedPages = pageNumbers?.deedPages || 4;
+        const mortgagePages = pageNumbers?.mortgagePages || 25;
         
         console.info(`Using recording page counts: deed=${deedPages}, mortgage=${mortgagePages}`);
         
@@ -293,7 +324,7 @@ function buildRecordingServiceBlock(recordingProducts, currentSeq, pageNumbers =
             // From ProductList (if it ever returns data)
             const id = product['lvis:DocId'] || product['lvis:Id'];
             name = product['lvis:DocName'] || product['lvis:Name'];
-            const defaultPages = product['lvis:Pages'] || product['lvis:DefaultPages'] || 1;
+            const defaultPages = product['lvis:Pages'] || product['lvis:DefaultPages'] || product['lvis:NumberOfPages'] || 1;
 
             // Map the name to the correct identifier
             // Check mortgage first since "Mortgage (Deed of Trust)" contains both words
@@ -320,7 +351,7 @@ function buildRecordingServiceBlock(recordingProducts, currentSeq, pageNumbers =
         
         console.info(`Building recording service ${index + 1}: ${identifier} - ${name}, pages: ${pages}, consideration: ${considerationAmount}`);
 
-        return `
+        const serviceXML = `
 <SERVICE SequenceNumber="${seq++}">
   <SERVICE_PRODUCT>
     <SERVICE_PRODUCT_REQUEST>
@@ -350,6 +381,9 @@ function buildRecordingServiceBlock(recordingProducts, currentSeq, pageNumbers =
     </SERVICE_PRODUCT_REQUEST>
   </SERVICE_PRODUCT>
 </SERVICE>`;
+
+        console.info(`📝 Generated recording service ${index + 1} XML:\n`, serviceXML);
+        return serviceXML;
     }).join('');
 
     return { xml, nextSeq: seq };
@@ -666,8 +700,18 @@ function parseProductList(productList, transactionType = 'Sale w/ Mortgage') {
     const closingProducts = parseSettlementProducts(closingCostsRaw);
 
     const recordingProductsRaw = productList['lvis:RecordingDocTypes']?.['lvis:RecordingDocType'];
+    console.info('🔍 Raw recording products from ProductList:', JSON.stringify(recordingProductsRaw, null, 2));
+
     const recordingProducts = (Array.isArray(recordingProductsRaw) ? recordingProductsRaw : [recordingProductsRaw])
         .filter(p => p?.['lvis:IsDefault'] === 'true');
+
+    console.info('📄 Filtered recording products (IsDefault=true):', JSON.stringify(recordingProducts, null, 2));
+    if (recordingProducts && recordingProducts.length > 0) {
+        console.info(`📄 Recording products details for debugging:`);
+        recordingProducts.forEach((p, idx) => {
+            console.info(`  Product ${idx + 1}:`, JSON.stringify(p, null, 2));
+        });
+    }
 
     const otherProductsRaw = productList['lvis:OtherProducts']?.['lvis:Product'];
     const otherProducts = (Array.isArray(otherProductsRaw) ? otherProductsRaw : [otherProductsRaw])
@@ -829,15 +873,21 @@ function getEndorsementsForPolicy(policy, allEndorsements, selectedEndorsementId
  */
 function buildEndorsementsXML(endorsements, policySequence) {
     if (!endorsements || endorsements.length === 0) {
+        console.info(`   ⚠️ No endorsements to build for policy ${policySequence}`);
         return '';
     }
+
+    console.info(`   📝 Building ${endorsements.length} endorsements for policy ${policySequence}:`);
 
     const endorsementsXML = endorsements.map((endorsement, index) => {
         const endorsementId = endorsement['lvis:EndorsementId'];
         const endorsementName = endorsement['lvis:EndorsementName'];
+        const label = `POLICY_${policySequence}_ENDR_${index + 1}`;
+
+        console.info(`      - ${label}: ID=${endorsementId}, Name="${endorsementName}"`);
 
         return `
-        <TITLE_ENDORSEMENT xlink:label="POLICY_${policySequence}_ENDR_${index + 1}" SequenceNumber="${index + 1}">
+        <TITLE_ENDORSEMENT xlink:label="${label}" SequenceNumber="${index + 1}">
           <TitleEndorsementFormIdentifier>${endorsementId}</TitleEndorsementFormIdentifier>
           <TitleEndorsementFormName>${endorsementName}</TitleEndorsementFormName>
         </TITLE_ENDORSEMENT>`;

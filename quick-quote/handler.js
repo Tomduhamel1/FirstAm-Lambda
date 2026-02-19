@@ -50,7 +50,8 @@ async function handleQuickQuote(event) {
     }
 
     const normalizedZip = PostalCode.toString().padStart(5, '0');
-    let noteAmount = Number(NoteAmount) === 0 ? constants.DEFAULT_NOTE_AMOUNT : Number(NoteAmount);
+    const originalNoteAmount = Number(NoteAmount);
+    let noteAmount = originalNoteAmount === 0 ? constants.DEFAULT_NOTE_AMOUNT : originalNoteAmount;
     let salesAmount = LoanPurposeType === 'Refinance' ? noteAmount : Number(SalesContractAmount);
 
     try {
@@ -246,7 +247,8 @@ async function handleQuickQuote(event) {
                 stateCode,
                 includeEndorsementsFlag,  // NEW - feature flag
                 allEndorsements,          // NEW - full endorsements list
-                []                        // Selected endorsement IDs (empty for quick-quote)
+                [],                       // Selected endorsement IDs (empty for quick-quote)
+                transactionType           // Transaction type for TN and other states
             )
         );
 
@@ -438,6 +440,18 @@ async function handleQuickQuote(event) {
 
         // Use centralized fees if applied, otherwise use RateCalc fees
         const finalFees = centralizedResult.fees;
+
+        // Zero out lender's policy amounts if original NoteAmount was 0 (cash deal)
+        if (originalNoteAmount === 0 && LoanPurposeType !== 'Cash Purchase') {
+            console.info(`💰 NoteAmount was 0 - zeroing out lender's policy amounts for backward compatibility`);
+            finalFees.forEach(fee => {
+                if (fee.FeeDescription && fee.FeeDescription.includes('Lender')) {
+                    console.info(`   Zeroing: ${fee.FeeDescription}`);
+                    fee.BuyerFee = "0";
+                    fee.SellerFee = "0";
+                }
+            });
+        }
 
         if (centralizedResult.centralizedRateApplied) {
             console.info(`[Quick Quote] Using centralized rate: $${centralizedResult.centralizedRate} for ${stateCode} refinance`);
