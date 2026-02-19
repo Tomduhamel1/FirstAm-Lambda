@@ -135,14 +135,25 @@ function validateAnswers(questions, answers) {
                     
                 case 'number':
                 case 'currency':
-                    if (isNaN(Number(answer))) {
+                    // Handle backward compatibility: Convert Y/N to numeric
+                    let numericAnswer = answer;
+                    if (typeof answer === 'string') {
+                        const upperAnswer = answer.toUpperCase();
+                        if (upperAnswer === 'N') {
+                            numericAnswer = 0;
+                        } else if (upperAnswer === 'Y') {
+                            numericAnswer = 1;
+                        }
+                    }
+
+                    if (isNaN(Number(numericAnswer))) {
                         errors.push({
                             questionId: question.paramCode,
                             paramCode: question.paramCode,
                             error: 'Must be a valid number'
                         });
                     } else {
-                        const numValue = Number(answer);
+                        const numValue = Number(numericAnswer);
                         if (question.min !== undefined && numValue < question.min) {
                             errors.push({
                                 questionId: question.paramCode,

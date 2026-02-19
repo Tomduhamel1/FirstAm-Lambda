@@ -1,5 +1,6 @@
 {
   "dependencies": {
+    "aws-sdk": "^2.1693.0",
     "axios": "^1.12.1",
     "fast-xml-parser": "^4.5.3",
     "uuid": "^9.0.1",
