@@ -1,6 +1,7 @@
 const { v4: uuidv4 } = require('uuid');
 const { handleL1Request } = require('./l1-handler');
-const { handleL2Request } = require('./l2-handler');
+const { handleL2Request, buildL2Summary, processFees } = require('./l2-handler');
+const { addFNTEFeesToResponse } = require('../shared/fnte-fees');
 const { 
     formatQuestionsForWebApp, 
     validateAnswers,
@@ -95,7 +96,8 @@ async function startOfficialQuoteV2(requestBody) {
         SalesContractAmount,
         NoteAmount,
         LoanPurposeType,
-        forceL2Questions = false
+        forceL2Questions = false,
+        pageNumbers = null  // Optional: {deedPages, mortgagePages, deedConsideration, mortgageConsideration}
     } = requestBody;
     
     // Validate required fields
@@ -106,7 +108,19 @@ async function startOfficialQuoteV2(requestBody) {
             body: JSON.stringify({ error: 'PostalCode is required' })
         };
     }
-    
+
+    // Normalize page numbers if provided (fill in defaults and consideration amounts)
+    let normalizedPageNumbers = null;
+    if (pageNumbers !== null && pageNumbers !== undefined) {
+        normalizedPageNumbers = {
+            deedPages: pageNumbers.deedPages || 4,
+            mortgagePages: pageNumbers.mortgagePages || 25,
+            deedConsideration: SalesContractAmount,      // Always use initial sales amount
+            mortgageConsideration: NoteAmount            // Always use initial note amount
+        };
+        console.info('Normalized page numbers:', normalizedPageNumbers);
+    }
+
     try {
         // Create session
         const sessionData = {
@@ -115,18 +129,20 @@ async function startOfficialQuoteV2(requestBody) {
             NoteAmount,
             LoanPurposeType,
             forceL2Questions,
+            pageNumbers: normalizedPageNumbers,  // Store normalized page numbers if provided upfront
             requestedAt: new Date().toISOString()
         };
-        
+
         const sessionId = await createL2Session(sessionData);
-        
+
         // Handle L1 request
         const l1Result = await handleL1Request({
             PostalCode,
             SalesContractAmount,
             NoteAmount,
             LoanPurposeType,
-            forceL2Questions
+            forceL2Questions,
+            pageNumbers: normalizedPageNumbers  // Pass normalized page numbers to L1 if provided
         });
         
         // Store L1 response in session
@@ -135,8 +151,34 @@ async function startOfficialQuoteV2(requestBody) {
         // Check if rates are immediately available or L2 questions needed
         if (l1Result.type === 'rates' && l1Result.hasCalculatedRates) {
             // Rates available immediately (no L2 needed)
-            await storeFinalRates(sessionId, l1Result);
-            
+            // Process fees from raw MISMO XML to simple format
+            console.info('[Handler] Processing fees for no-L2 path');
+            const processedFees = processFees(l1Result.fees, l1Result.parties || []);
+
+            // Zero out lender's policy amounts if original NoteAmount was 0 (cash deal)
+            if (l1Result.originalNoteAmount === 0 && l1Result.loanPurposeType !== 'Cash Purchase') {
+                console.info(`💰 NoteAmount was 0 - zeroing out lender's policy amounts for backward compatibility`);
+                processedFees.forEach(fee => {
+                    if (fee.FeeDescription && fee.FeeDescription.includes('Lender')) {
+                        console.info(`   Zeroing: ${fee.FeeDescription}`);
+                        fee.BuyerFee = "0";
+                        fee.SellerFee = "0";
+                    }
+                });
+            }
+
+            // Add FNTE state-specific fees (settlement, notary, etc.)
+            await addFNTEFeesToResponse(
+                processedFees,
+                l1Result.stateCode,
+                l1Result.loanPurposeType,
+                'Handler (no L2)'
+            );
+
+            // Store the processed fees
+            const finalResult = { ...l1Result, fees: processedFees };
+            await storeFinalRates(sessionId, finalResult);
+
             return {
                 statusCode: 200,
                 headers: getCORSHeaders(),
@@ -145,17 +187,44 @@ async function startOfficialQuoteV2(requestBody) {
                     status: 'completed',
                     message: 'Rates calculated successfully',
                     hasCalculatedRates: true,
-                    fees: l1Result.fees,
+                    fees: processedFees,
                     loanComments: l1Result.loanComments,
                     endorsements: l1Result.endorsements,
                     locationInfo: l1Result.locationData
                 })
             };
         } else {
-            // L2 questions required - but first need page numbers
+            // L2 questions required
             const formattedQuestions = formatQuestionsForWebApp(l1Result.questions);
-            
-            // Add page number and consideration amount questions as a separate step
+
+            // If page numbers were provided upfront, skip page collection and return L2 questions directly
+            if (normalizedPageNumbers) {
+                console.info('Page numbers provided upfront - proceeding directly to L2 questions');
+
+                // Store normalized page numbers in session for future reference
+                const { storePageNumbers } = require('./session-manager');
+                await storePageNumbers(sessionId, normalizedPageNumbers);
+
+                return {
+                    statusCode: 200,
+                    headers: getCORSHeaders(),
+                    body: JSON.stringify({
+                        sessionId,
+                        status: 'pending_answers',
+                        message: 'Please answer the following questions to complete your quote',
+                        questions: formattedQuestions,
+                        endorsements: l1Result.endorsements,
+                        pageNumbers: normalizedPageNumbers,
+                        locationInfo: l1Result.locationData,
+                        expiresIn: '24 hours',
+                        nextStep: 'Use submit action with answers to complete quote'
+                    })
+                };
+            }
+
+            // Page numbers NOT provided - ask for them first (original flow)
+            console.info('Page numbers not provided - requesting page information before L2 questions');
+
             const pageQuestions = [
                 {
                     id: 'deedPages',
@@ -164,7 +233,7 @@ async function startOfficialQuoteV2(requestBody) {
                     paramCode: 'deedPages',
                     paramName: 'Deed Page Count',
                     required: true,
-                    defaultAnswer: '3',
+                    defaultAnswer: '4',
                     type: 'number',
                     min: 1,
                     max: 100,
@@ -178,7 +247,7 @@ async function startOfficialQuoteV2(requestBody) {
                     paramCode: 'mortgagePages',
                     paramName: 'Mortgage Page Count',
                     required: true,
-                    defaultAnswer: '15',
+                    defaultAnswer: '25',
                     type: 'number',
                     min: 1,
                     max: 200,
@@ -212,7 +281,7 @@ async function startOfficialQuoteV2(requestBody) {
                     helpText: 'Typically the loan amount'
                 }
             ];
-            
+
             return {
                 statusCode: 200,
                 headers: getCORSHeaders(),
@@ -509,7 +578,9 @@ async function submitAnswersV2(requestBody) {
             stateCode: l1Response.locationData?.state,
             countyName: l1Response.locationData?.county,
             loanPurposeType: session.LoanPurposeType,
-            noteAmount: session.NoteAmount
+            noteAmount: session.NoteAmount,
+            // Pass endorsements metadata from L1 for fee extraction in L2
+            endorsements: l1Response.endorsements
         });
         
         // Store final rates
