@@ -15,7 +15,7 @@ module.exports = {
     TABLES: {
         ZIP_CODES: 'ZipCodes',
         FNTE_FEES: 'FNTEFees',
-        QUOTE_SESSIONS: 'QuoteSessions'
+        QUOTE_SESSIONS: 'QuoteSessionsV2'
     },
     
     // Session Configuration

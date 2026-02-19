@@ -44,7 +44,7 @@ async function getStateFees(stateCode) {
 
 async function saveQuoteSession(sessionId, sessionData) {
     const params = {
-        TableName: 'QuoteSessions',
+        TableName: 'QuoteSessionsV2',
         Item: {
             sessionId,
             ...sessionData,
@@ -65,7 +65,7 @@ async function saveQuoteSession(sessionId, sessionData) {
 
 async function getQuoteSession(sessionId) {
     const params = {
-        TableName: 'QuoteSessions',
+        TableName: 'QuoteSessionsV2',
         Key: { sessionId }
     };
     
@@ -92,7 +92,7 @@ async function updateQuoteSession(sessionId, updates) {
     });
     
     const params = {
-        TableName: 'QuoteSessions',
+        TableName: 'QuoteSessionsV2',
         Key: { sessionId },
         UpdateExpression: `SET ${updateExpressions.join(', ')}, updatedAt = :updatedAt`,
         ExpressionAttributeNames: expressionAttributeNames,
