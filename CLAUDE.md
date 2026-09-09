@@ -58,6 +58,7 @@ AWS_PROFILE=fnte AWS_REGION=us-east-1 aws lambda update-function-code \
 
 ### Important Deployment Notes
 
+- **FirstAm credentials**: `FIRSTAM_CLIENT_SECRET` must be set in the Lambda environment (both `fnte-fee-calculator-prod` and `fnte-fee-calculator-l2-test`). There is no hard-coded fallback since the 2026-09-09 secret rotation; `shared/auth.js` logs an error at load if it is missing. Rotate with `aws lambda update-function-configuration --environment file://env.json` (keep `FIRSTAM_CLIENT_ID` and `FIRSTAM_TENANT_ID` in the same file, the call replaces the whole variable set).
 - **Package Size**: Expect ~30-35MB with all dependencies (aws-sdk v2 alone is ~50MB)
 - **aws-sdk**: Lambda Node.js 20.x runtime provides aws-sdk v3, but this code uses v2 APIs. Must bundle aws-sdk v2 in deployment package.
 - **Zip Performance**: Creating zip with full node_modules can take 1-2 minutes due to aws-sdk's 191 service client files
