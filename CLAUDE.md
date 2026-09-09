@@ -387,6 +387,18 @@ The function includes comprehensive error handling:
 
 **Fix**: Ensure both code paths call `addFNTEFeesToResponse()` from shared function
 
+### Upstream Timeouts (503 UPSTREAM_TIMEOUT)
+
+**Symptom**: Clients get `503 {"error":"UPSTREAM_TIMEOUT","message":"The FirstAm rate calculator is not responding..."}`; CloudWatch shows `[FirstAm ProductList] Upstream timeout after 12000ms`.
+
+**Meaning**: FirstAm's LVIS backend did not answer within the per-call limit. This is a FirstAm outage/slowdown (see 2026-09-09: ProductList took 25-60s per call). Not a bug in this code. Before the fail-fast change, the same condition surfaced as API Gateway's generic `504 {"message":"Endpoint request timed out"}` at 29s while the Lambda kept running to 60s.
+
+**How it works** (`shared/firstam-retry.js`): `index.js` starts a per-invocation time budget from the Lambda context (default 26s, under the 29s API Gateway integration limit). Every FirstAm/OAuth call goes through `firstAmRequestWithRetry()` with `timeout = min(perCallCap, remainingBudget - 1.5s)`. Timeouts retry at most once and only if a full-size retry still fits; when no budget is left the request is not sent (`"exhausted": true`). Defaults: OAuth 5s, TransactionTypes 6s, ProductList 12s, RateCalc 20s. Override with env vars `FIRSTAM_REQUEST_BUDGET_MS`, `FIRSTAM_SAFETY_MARGIN_MS`, `FIRSTAM_MIN_CALL_MS`, `FIRSTAM_OAUTH_TIMEOUT_MS`, `FIRSTAM_TXTYPES_TIMEOUT_MS`, `FIRSTAM_PRODUCTLIST_TIMEOUT_MS`, `FIRSTAM_RATECALC_TIMEOUT_MS`.
+
+**Check**: run a ProductList call directly with the real token (`shared/auth.js` `getOAuthToken()` + `buildProductListRequestXML`) and time it. A fast 401 with a bogus token but a 20s+ answer with the real one means FirstAm's application backend is degraded. Reproduce a timeout without FirstAm by setting `FIRSTAM_PRODUCTLIST_TIMEOUT_MS=1 FIRSTAM_MIN_CALL_MS=1` on the test function.
+
+**Do not** raise the API Gateway 29s integration timeout: a longer window only makes users wait longer for the same failure.
+
 ### Deployment Module Errors
 
 **Symptom**: `Cannot find module 'axios'` or `Cannot find module 'aws-sdk'` errors after deployment
