@@ -1,10 +1,12 @@
 const axios = require('axios');
+const { firstAmRequestWithRetry, upstreamTimeoutResponse } = require('../shared/firstam-retry');
 const xml2js = require('xml2js');
 const { getOAuthToken } = require('../shared/auth');
-const { getZipCodeData, getStateFees, logAwsIdentity } = require('../shared/database');
+const { getZipCodeData, getStateFees, getElendPublicCalcFees, logAwsIdentity } = require('../shared/database');
 const {
     buildTitleServiceBlock,
     buildSettlementServiceBlock,
+    buildCPLServiceBlock,
     buildRecordingServiceBlock,
     buildTransactionTypesRequestXML,
     parseTransactionTypesResponse,
@@ -14,9 +16,15 @@ const {
 } = require('../shared/xml-builders');
 const constants = require('../shared/constants');
 const { applyCentralizedRateIfEligible } = require('../shared/centralized-integration');
+const { filterCashPurchaseFees } = require('../shared/cash-purchase-filter');
 
-async function handleQuickQuote(event) {
+async function handleQuickQuote(event, options = {}) {
+    // Extract options with defaults for backward compatibility
+    const tableName = options.tableName || 'FNTEFees';  // Default to existing table
+    const includeCPL = options.includeCPL || false;      // Default to NOT including CPL from FirstAm
+
     console.info('Received event:', JSON.stringify(event, null, 2));
+    console.info(`Options: tableName=${tableName}, includeCPL=${includeCPL}`);
 
     let requestBody;
     try {
@@ -65,9 +73,11 @@ async function handleQuickQuote(event) {
         const zipCodeData = await getZipCodeData(PostalCode);
         const { city, county_name: countyName, state_id: stateCode } = zipCodeData;
 
-        // Get state fees
-        const stateFeeData = await getStateFees(stateCode);
-        console.info('State Fee Data:', stateFeeData);
+        // Get state fees from appropriate table
+        const stateFeeData = tableName === 'eLEND_public_calc'
+            ? await getElendPublicCalcFees(stateCode)
+            : await getStateFees(stateCode);
+        console.info(`State Fee Data from ${tableName}:`, stateFeeData);
 
         // Normalize request fields
         const loanPurposeType = LoanPurposeType;
@@ -98,16 +108,15 @@ async function handleQuickQuote(event) {
 
                 console.info('📄 TransactionTypes Request XML:\n', transactionTypesRequestXML);
 
-                const transactionTypesResponse = await axios.post(
-                    constants.PRODUCT_LIST_URL,  // Same endpoint, different action type
-                    transactionTypesRequestXML,
-                    {
-                        headers: {
-                            Authorization: `Bearer ${token}`,
-                            'Content-Type': 'application/xml',
-                        },
-                    }
-                );
+                const transactionTypesResponse = await firstAmRequestWithRetry({
+                    method: 'post',
+                    url: constants.PRODUCT_LIST_URL,
+                    data: transactionTypesRequestXML,
+                    headers: {
+                        Authorization: `Bearer ${token}`,
+                        'Content-Type': 'application/xml',
+                    },
+                }, { label: 'FirstAm TransactionTypes' });
 
                 console.info("📦 TransactionTypes raw XML response:\n", transactionTypesResponse.data);
 
@@ -173,16 +182,15 @@ async function handleQuickQuote(event) {
 
         console.info('📄 ProductList Request XML:\n', productListRequestXML);
 
-        const productListResponse = await axios.post(
-            constants.PRODUCT_LIST_URL,
-            productListRequestXML,
-            {
-                headers: {
-                    Authorization: `Bearer ${token}`,
-                    'Content-Type': 'application/xml',
-                },
-            }
-        );
+        const productListResponse = await firstAmRequestWithRetry({
+            method: 'post',
+            url: constants.PRODUCT_LIST_URL,
+            data: productListRequestXML,
+            headers: {
+                Authorization: `Bearer ${token}`,
+                'Content-Type': 'application/xml',
+            },
+        }, { label: 'FirstAm ProductList' });
 
         console.info("📦 ProductList raw XML response:\n", productListResponse.data);
 
@@ -221,7 +229,8 @@ async function handleQuickQuote(event) {
             allEndorsements,  // NEW - full endorsement list for feature flag
             closingProducts,
             recordingProducts,
-            otherProducts
+            otherProducts,
+            cplProducts  // NEW - CPL products from ProductList
         } = parseProductList(productList, transactionType);
 
         console.log('✅ Enabled Title Policies:', titlePolicies.map(p => p['lvis:PolicyName']));
@@ -254,7 +263,19 @@ async function handleQuickQuote(event) {
 
         // Skip settlement services for all states - causes errors with invalid closing product IDs
         console.info(`Skipping settlement services for ${stateCode} - prevents closing product errors`);
-        currentSeq = 2; // Settlement would have been seq 2, so recording starts at 2
+        currentSeq = 2; // Settlement would have been seq 2, so CPL/Recording starts at 2
+
+        // CPL block (if includeCPL flag is enabled)
+        if (includeCPL) {
+            console.info('🔒 Including CPL service block from FirstAm API');
+            const cplResult = buildCPLServiceBlock(cplProducts, currentSeq);  // Use CPL products from ProductList
+            if (cplResult.xml) {
+                servicesParts.push(cplResult.xml);
+                currentSeq = cplResult.nextSeq;
+            }
+        } else {
+            console.info('Skipping CPL service block (will use database CPL if available)');
+        }
 
         // Recording blocks with default page numbers
         const defaultPageNumbers = {
@@ -286,12 +307,15 @@ async function handleQuickQuote(event) {
 
         // Call the RateCalcGuide API
         console.info('Calling RateCalcGuide API...');
-        const rateCalcGuideResponse = await axios.post(constants.RATE_CALC_URL, requestXML, {
+        const rateCalcGuideResponse = await firstAmRequestWithRetry({
+            method: 'post',
+            url: constants.RATE_CALC_URL,
+            data: requestXML,
             headers: {
-                'Authorization': `Bearer ${token}`,
-                'Content-Type': 'application/xml'
-            }
-        });
+                Authorization: `Bearer ${token}`,
+                'Content-Type': 'application/xml',
+            },
+        }, { label: 'FirstAm L1 RateCalc' });
 
         // Log the XML response
         console.info('RateCalcGuide API Response:', rateCalcGuideResponse.data);
@@ -328,9 +352,16 @@ async function handleQuickQuote(event) {
 
         console.info(`🔍 L2 Detection Check: hasCalculatedRates="${hasCalculatedRates}", hasL2Data=${!!calcRateLevel2Data}`);
 
-        if (hasCalculatedRates === 'false' && calcRateLevel2Data) {
-            console.info('🔄 L2 questions detected - HasCalculatedRates=false');
-            console.info('📝 Automatically handling L2 questions for Reissue rate...');
+        // Auto-handle L2 questions for quick quote behavior
+        // This handles BOTH cases:
+        // 1. hasCalculatedRates=false (L2 required) - typical for Reissue rates
+        // 2. hasCalculatedRates=true with L2 questions (optional questions) - typical for MD, CT states
+        if (calcRateLevel2Data) {
+            const l2Reason = hasCalculatedRates === 'false'
+                ? 'L2 required for rates'
+                : 'L2 questions present (optional refinement)';
+            console.info(`🔄 L2 questions detected - ${l2Reason}`);
+            console.info('📝 Automatically handling L2 questions for quick quote...');
 
             try {
                 // Parse CalcRateLevel2Data to handle both array and object formats
@@ -364,12 +395,15 @@ async function handleQuickQuote(event) {
                 console.info('🔍 L2 Request XML (first 2000 chars):', l2RequestXML.substring(0, 2000));
 
                 // Send L2 request
-                const l2Response = await axios.post(constants.RATE_CALC_URL, l2RequestXML, {
+                const l2Response = await firstAmRequestWithRetry({
+                    method: 'post',
+                    url: constants.RATE_CALC_URL,
+                    data: l2RequestXML,
                     headers: {
-                        'Authorization': `Bearer ${token}`,
-                        'Content-Type': 'application/xml'
-                    }
-                });
+                        Authorization: `Bearer ${token}`,
+                        'Content-Type': 'application/xml',
+                    },
+                }, { label: 'FirstAm L2 RateCalc' });
 
                 console.info('📥 L2 Response received');
 
@@ -425,7 +459,8 @@ async function handleQuickQuote(event) {
             LoanPurposeType,
             PostalCode,
             SalesContractAmount,
-            stateFeeData
+            stateFeeData,
+            includeCPL
         });
 
         // Apply centralized rates if eligible (refinance + centralized state)
@@ -439,19 +474,10 @@ async function handleQuickQuote(event) {
         );
 
         // Use centralized fees if applied, otherwise use RateCalc fees
-        const finalFees = centralizedResult.fees;
+        let finalFees = centralizedResult.fees;
 
-        // Zero out lender's policy amounts if original NoteAmount was 0 (cash deal)
-        if (originalNoteAmount === 0 && LoanPurposeType !== 'Cash Purchase') {
-            console.info(`💰 NoteAmount was 0 - zeroing out lender's policy amounts for backward compatibility`);
-            finalFees.forEach(fee => {
-                if (fee.FeeDescription && fee.FeeDescription.includes('Lender')) {
-                    console.info(`   Zeroing: ${fee.FeeDescription}`);
-                    fee.BuyerFee = "0";
-                    fee.SellerFee = "0";
-                }
-            });
-        }
+        // Filter out mortgage-related fees for cash purchases (Phase 1 fix)
+        finalFees = filterCashPurchaseFees(finalFees, originalNoteAmount, LoanPurposeType);
 
         if (centralizedResult.centralizedRateApplied) {
             console.info(`[Quick Quote] Using centralized rate: $${centralizedResult.centralizedRate} for ${stateCode} refinance`);
@@ -497,6 +523,9 @@ async function handleQuickQuote(event) {
         };
     } catch (error) {
         console.error('Error:', error.response ? error.response.data : error.message);
+        // FirstAm hang / no time budget left: clear 503 instead of running into the API Gateway 504
+        const timeoutResponse = upstreamTimeoutResponse(error, constants.CORS_HEADERS);
+        if (timeoutResponse) return timeoutResponse;
         return {
             statusCode: error.message === `Zip code ${PostalCode} not found` ? 404 : 500,
             headers: constants.CORS_HEADERS,
@@ -596,7 +625,7 @@ function extractCombinedEndorsementFees(fees, titlePolicies, lenderPolicies) {
     };
 }
 
-function extractFees({ fees, loanComments, LoanPurposeType, PostalCode, SalesContractAmount, stateFeeData }) {
+function extractFees({ fees, loanComments, LoanPurposeType, PostalCode, SalesContractAmount, stateFeeData, includeCPL = false }) {
     // Helper functions for fee extraction
     const extractFeesByDescription = (feeArray, description) => {
         const feeObj = feeArray.find(fee => fee['FEE_DETAIL'][0]['FeeDescription'][0] === description);
@@ -692,6 +721,35 @@ function extractFees({ fees, loanComments, LoanPurposeType, PostalCode, SalesCon
         });
     };
 
+    const extractCPLFees = (feeArray) => {
+        // Find all fees with labels starting with "FEE_POLICY_CPL_"
+        const cplFees = feeArray.filter(fee => {
+            const label = fee['$']['xlink:label'];
+            return label && label.startsWith('FEE_POLICY_CPL_');
+        });
+
+        console.info(`📋 Found ${cplFees.length} CPL fees from FirstAm API`);
+
+        return cplFees.map(fee => {
+            const feeDetail = fee['FEE_DETAIL'][0];
+            const feeDescription = feeDetail['FeeDescription'][0];
+            const disclosureItemName = feeDetail['DisclosureItemName'] ? feeDetail['DisclosureItemName'][0] : feeDescription;
+
+            const feePayments = fee['FEE_PAYMENTS'][0]['FEE_PAYMENT'];
+            const buyerFee = feePayments.find(payment => payment['FeePaymentPaidByType'][0] === 'Buyer');
+            const sellerFee = feePayments.find(payment => payment['FeePaymentPaidByType'][0] === 'Seller');
+
+            console.info(`   CPL: ${feeDescription}, Buyer: ${buyerFee ? buyerFee['FeeActualPaymentAmount'][0] : '0.0'}, Seller: ${sellerFee ? sellerFee['FeeActualPaymentAmount'][0] : '0.0'}`);
+
+            return {
+                FeeDescription: feeDescription,
+                DisclosureItemName: disclosureItemName,
+                BuyerFee: buyerFee ? buyerFee['FeeActualPaymentAmount'][0] : '0.0',
+                SellerFee: sellerFee ? sellerFee['FeeActualPaymentAmount'][0] : '0.0'
+            };
+        });
+    };
+
     // Extract required fees
     const eaglePolicyFees = LoanPurposeType === 'Refinance' ? 
         { BuyerFee: '0.0', SellerFee: '0.0' } : 
@@ -719,6 +777,15 @@ function extractFees({ fees, loanComments, LoanPurposeType, PostalCode, SalesCon
     
     let recordingFees = extractRecordingFees(fees);
     let transferTaxFees = extractTransferTaxFees(fees);
+
+    // Extract CPL fees from FirstAm if includeCPL flag is enabled
+    let cplFees = [];
+    if (includeCPL) {
+        cplFees = extractCPLFees(fees);
+        console.info(`🔒 Using CPL fees from FirstAm API (${cplFees.length} fees), will skip database CPL`);
+    } else {
+        console.info('📋 Will use CPL fees from database (if available)');
+    }
 
     // Exclude certain fees for Refinance
     if (LoanPurposeType === 'Refinance' || LoanPurposeType === '$Refinance') {
@@ -749,7 +816,8 @@ function extractFees({ fees, loanComments, LoanPurposeType, PostalCode, SalesCon
             ...altaLoanPolicyTaxFees
         },
         ...recordingFees,
-        ...transferTaxFees
+        ...transferTaxFees,
+        ...cplFees
     ];
 
     // Calculate and add Agricultural Tax if applicable
@@ -802,6 +870,12 @@ function extractFees({ fees, loanComments, LoanPurposeType, PostalCode, SalesCon
             ) return;
 
             if (stateFeeData[feeKey] == null || stateFeeData[feeKey] === 0) return;
+
+            // Skip database CPL fees if using FirstAm API CPL
+            if (includeCPL && (feeKey === 'CPLBuyer' || feeKey === 'CPLSeller')) {
+                console.info(`⏭️  Skipping database ${feeKey} (using FirstAm API CPL instead)`);
+                return;
+            }
 
             // Abstractor Title Search — handle refi version if applicable
             if (feeKey === 'AbstractorTitleSearchREFI' && LoanPurposeType === 'Refinance') {
@@ -891,7 +965,18 @@ function mapAnswersToL2Format(calcRateLevel2Data, userAnswers) {
                 console.info(`🔍 Question ParamCode: ${paramCode}, hasAnswer: ${userAnswers[paramCode] !== undefined}`);
 
                 // User answers are keyed by paramCode (e.g., RFC_17_0, RFC_589_0, etc.)
-                const userAnswer = userAnswers[paramCode];
+                // If we don't have an explicit answer, fall back to the question's own
+                // DefaultAnswer so required prompts we didn't anticipate (state-specific
+                // recording/tax questions) don't cause an E0006 "answer is required" error.
+                let userAnswer = userAnswers[paramCode];
+                if (userAnswer === undefined) {
+                    let def = qa['DefaultAnswer'] || qa['lvis:DefaultAnswer'];
+                    if (Array.isArray(def)) def = def[0];
+                    if (def !== undefined && def !== null && def !== '') {
+                        userAnswer = def;
+                        console.info(`↩️ Using FirstAm DefaultAnswer for ${paramCode}: ${def}`);
+                    }
+                }
 
                 if (userAnswer !== undefined) {
                     // Update the answer - keep the same structure as original
@@ -945,7 +1030,22 @@ function generateDefaultL2Answers(noteAmount, stateCode, loanPurposeType) {
     answers['FACC_284_0'] = '2'; // Federal/Tax Exempt Credit Union? → No
 
     // State-specific defaults
-    if (stateCode === 'FL') {
+    if (stateCode === 'TX') {
+        // Texas R-8 refinance credit asks for the PRIOR LOAN, not a prior policy.
+        // FirstAm requires these or it returns E0006 "prompt answer is required".
+        // ParamCodes discovered from the live TX L2 schema (RateType=Refinance).
+        // Optimistic default: assume a qualifying prior loan equal to the current
+        // loan, recorded ~3 years ago, and no second prior loan.
+        const threeYearsAgo = new Date();
+        threeYearsAgo.setFullYear(threeYearsAgo.getFullYear() - 3);
+        const txPriorDate = `${threeYearsAgo.getMonth() + 1}/${threeYearsAgo.getDate()}/${threeYearsAgo.getFullYear()}`;
+        answers['P0_1522'] = String(noteAmount); // Total Payoff Amount of 1st Prior Loan
+        answers['P0_1526'] = String(noteAmount); // Original Amount of 1st Prior Loan
+        answers['P0_1528'] = txPriorDate;        // Recording Date of 1st Prior Loan
+        answers['P0_1524'] = '0';                // 2nd Prior Loan payoff → none
+        answers['P0_1527'] = '0';                // 2nd Prior Loan original → none
+        answers['P0_1529'] = '1/1/1900';         // 2nd Prior Loan date → none sentinel
+    } else if (stateCode === 'FL') {
         // Florida-specific L2 questions (if any beyond above)
         // Most FL questions are already covered above
     } else if (stateCode === 'CT') {

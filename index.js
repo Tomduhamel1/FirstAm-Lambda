@@ -5,6 +5,7 @@ const { handleEnhancedQuote } = require('./enhanced-quote/handler'); // Enhanced
 const { handleGreenlightRequest } = require('./greenlight/handler'); // Greenlight API integration
 const { handleAgentNetQuote } = require('./agentnet/handler'); // AgentNet standalone quote (isolated system)
 const { handleCentralizedRate } = require('./centralized-rates/handler'); // Centralized loan rates (44 states, instant calculation)
+const { beginRequestBudget, upstreamTimeoutResponse } = require('./shared/firstam-retry'); // per-request time budget for FirstAm calls
 
 /**
  * Main Lambda handler that routes requests to appropriate quote handlers
@@ -12,7 +13,11 @@ const { handleCentralizedRate } = require('./centralized-rates/handler'); // Cen
  * @param {Object} event - API Gateway Lambda Proxy Integration event
  * @returns {Object} API Gateway Lambda Proxy Integration response
  */
-exports.handler = async (event) => {
+exports.handler = async (event, context) => {
+    // Start the per-invocation time budget for upstream (FirstAm) calls so we fail fast
+    // and clearly instead of running into the API Gateway 29s / Lambda 60s limits.
+    beginRequestBudget(context);
+
     console.info('Main handler received event:', JSON.stringify(event, null, 2));
     
     // Parse the HTTP method and path
@@ -58,6 +63,11 @@ exports.handler = async (event) => {
             return await handleEnhancedQuote(event);
         }
 
+        // Handle eLEND public calc paths (quick quote with eLEND_public_calc table + CPL from FirstAm)
+        if (path.includes('elend-public-calc')) {
+            return await handleQuickQuote(event, { tableName: 'eLEND_public_calc', includeCPL: true });
+        }
+
         // Handle official quote V2 paths (with L2 support) - API Gateway or direct
         if (path === '/fee-calculator/official-quote' || path.includes('official-quote-v2')) {
             return await handleOfficialQuoteV2(event);
@@ -97,12 +107,18 @@ exports.handler = async (event) => {
             },
             body: JSON.stringify({
                 error: 'Not Found',
-                message: `Path ${path} not found. Available endpoints: /, /quick-quote, /official-quote, /official-quote-v2, /enhanced-quote, /agentnet-quote, /centralized-rate, /Token, /Direct/CreateQuoteExtended, /Direct/CreateQuoteExtendedVal, /Direct/CreateQuoteFIPS`
+                message: `Path ${path} not found. Available endpoints: /, /quick-quote, /official-quote, /official-quote-v2, /enhanced-quote, /elend-public-calc, /agentnet-quote, /centralized-rate, /Token, /Direct/CreateQuoteExtended, /Direct/CreateQuoteExtendedVal, /Direct/CreateQuoteFIPS`
             })
         };
         
     } catch (error) {
         console.error('Unhandled error in main handler:', error);
+        const timeoutResponse = upstreamTimeoutResponse(error, {
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+            'Access-Control-Allow-Methods': 'OPTIONS,POST,GET'
+        });
+        if (timeoutResponse) return timeoutResponse;
         return {
             statusCode: 500,
             headers: {

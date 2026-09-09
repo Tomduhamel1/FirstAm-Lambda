@@ -1,4 +1,5 @@
 const axios = require('axios');
+const { firstAmRequestWithRetry, upstreamTimeoutResponse } = require('../shared/firstam-retry');
 const xml2js = require('xml2js');
 const { getOAuthToken } = require('../shared/auth');
 const { getZipCodeData, getStateFees, logAwsIdentity } = require('../shared/database');
@@ -14,6 +15,7 @@ const {
 } = require('../shared/xml-builders');
 const constants = require('../shared/constants');
 const { applyCentralizedRateIfEligible } = require('../shared/centralized-integration');
+const { filterCashPurchaseFees } = require('../shared/cash-purchase-filter');
 
 async function handleEnhancedQuote(event) {
     console.info('Received enhanced quote event:', JSON.stringify(event, null, 2));
@@ -97,16 +99,15 @@ async function handleEnhancedQuote(event) {
 
                 console.info('📄 TransactionTypes Request XML:\n', transactionTypesRequestXML);
 
-                const transactionTypesResponse = await axios.post(
-                    constants.PRODUCT_LIST_URL,  // Same endpoint, different action type
-                    transactionTypesRequestXML,
-                    {
-                        headers: {
-                            Authorization: `Bearer ${token}`,
-                            'Content-Type': 'application/xml',
-                        },
-                    }
-                );
+                const transactionTypesResponse = await firstAmRequestWithRetry({
+                    method: 'post',
+                    url: constants.PRODUCT_LIST_URL,
+                    data: transactionTypesRequestXML,
+                    headers: {
+                        Authorization: `Bearer ${token}`,
+                        'Content-Type': 'application/xml',
+                    },
+                }, { label: 'FirstAm TransactionTypes' });
 
                 console.info("📦 TransactionTypes raw XML response:\n", transactionTypesResponse.data);
 
@@ -174,16 +175,15 @@ async function handleEnhancedQuote(event) {
         console.info(`Request parameters: State=${stateCode}, County=${countyName}, City=${city}, TransactionType=${transactionType}`);
         console.info('ProductList Request XML:', productListRequestXML);
 
-        const productListResponse = await axios.post(
-            constants.PRODUCT_LIST_URL,
-            productListRequestXML,
-            {
-                headers: {
-                    Authorization: `Bearer ${token}`,
-                    'Content-Type': 'application/xml',
-                },
-            }
-        );
+        const productListResponse = await firstAmRequestWithRetry({
+            method: 'post',
+            url: constants.PRODUCT_LIST_URL,
+            data: productListRequestXML,
+            headers: {
+                Authorization: `Bearer ${token}`,
+                'Content-Type': 'application/xml',
+            },
+        }, { label: 'FirstAm ProductList' });
 
         const parsedProductList = await xml2js.parseStringPromise(productListResponse.data, {
             explicitArray: false,
@@ -230,8 +230,9 @@ async function handleEnhancedQuote(event) {
         let currentSeq = 1;
         let servicesParts = [];
 
-        // Disable endorsements for refinances (all states) and all TX transactions
-        const shouldIncludeEndorsements = LoanPurposeType !== 'Refinance' && stateCode !== 'TX';
+        // Disable endorsements for refinances (all states), TX, and CA transactions
+        // CA rejects MISMO XML with endorsements ("Bad Request Found" error)
+        const shouldIncludeEndorsements = LoanPurposeType !== 'Refinance' && stateCode !== 'TX' && stateCode !== 'CA';
 
         // Title block (always Sequence 1)
         servicesParts.push(
@@ -283,12 +284,15 @@ async function handleEnhancedQuote(event) {
         });
 
         console.info('Calling RateCalcGuide API for enhanced quote...');
-        const rateCalcGuideResponse = await axios.post(constants.RATE_CALC_URL, requestXML, {
+        const rateCalcGuideResponse = await firstAmRequestWithRetry({
+            method: 'post',
+            url: constants.RATE_CALC_URL,
+            data: requestXML,
             headers: {
-                'Authorization': `Bearer ${token}`,
-                'Content-Type': 'application/xml'
-            }
-        });
+                Authorization: `Bearer ${token}`,
+                'Content-Type': 'application/xml',
+            },
+        }, { label: 'FirstAm L1 RateCalc' });
 
         // Parse the XML response
         const parser = new xml2js.Parser();
@@ -358,12 +362,15 @@ async function handleEnhancedQuote(event) {
                 console.info('🔍 L2 Request XML (first 2000 chars):', l2RequestXML.substring(0, 2000));
 
                 // Send L2 request
-                const l2Response = await axios.post(constants.RATE_CALC_URL, l2RequestXML, {
+                const l2Response = await firstAmRequestWithRetry({
+                    method: 'post',
+                    url: constants.RATE_CALC_URL,
+                    data: l2RequestXML,
                     headers: {
-                        'Authorization': `Bearer ${token}`,
-                        'Content-Type': 'application/xml'
-                    }
-                });
+                        Authorization: `Bearer ${token}`,
+                        'Content-Type': 'application/xml',
+                    },
+                }, { label: 'FirstAm L2 RateCalc' });
 
                 console.info('📥 L2 Response received');
 
@@ -460,23 +467,11 @@ async function handleEnhancedQuote(event) {
         );
 
         // Use centralized fees if applied, otherwise use RateCalc fees
-        const finalFees = centralizedResult.fees;
+        let finalFees = centralizedResult.fees;
 
-        // Zero out lender's policy amounts if original NoteAmount was 0 (cash deal)
-        if (originalNoteAmount === 0 && LoanPurposeType !== 'Cash Purchase') {
-            console.info(`💰 NoteAmount was 0 - zeroing out lender's policy amounts for backward compatibility`);
-            finalFees.forEach(fee => {
-                if (fee.FeeDescription && fee.FeeDescription.includes('Lender')) {
-                    console.info(`   Zeroing: ${fee.FeeDescription}`);
-                    fee.Buyer.actualAmount = "0.00";
-                    fee.Buyer.disclosedAmount = "0.00";
-                    fee.Seller.actualAmount = "0.00";
-                    fee.Seller.disclosedAmount = "0.00";
-                    fee.TotalActual = "0.00";
-                    fee.TotalDisclosed = "0.00";
-                }
-            });
-        }
+        // Filter out mortgage-related fees for cash purchases (Phase 1 fix)
+        // Apply filter directly to enhanced fees (maintains DisclosureItemName for detection)
+        finalFees = filterCashPurchaseFees(finalFees, originalNoteAmount, LoanPurposeType);
 
         if (centralizedResult.centralizedRateApplied) {
             console.info(`[Enhanced Quote] Using centralized rate: $${centralizedResult.centralizedRate} for ${stateCode} refinance`);
@@ -537,6 +532,9 @@ async function handleEnhancedQuote(event) {
         };
     } catch (error) {
         console.error('Error:', error.response ? error.response.data : error.message);
+        // FirstAm hang / no time budget left: clear 503 instead of running into the API Gateway 504
+        const timeoutResponse = upstreamTimeoutResponse(error, constants.CORS_HEADERS);
+        if (timeoutResponse) return timeoutResponse;
         return {
             statusCode: error.message === `Zip code ${PostalCode} not found` ? 404 : 500,
             headers: constants.CORS_HEADERS,
@@ -1123,7 +1121,17 @@ function mapAnswersToL2Format(calcRateLevel2Data, userAnswers) {
                 console.info(`🔍 Question ParamCode: ${paramCode}, hasAnswer: ${userAnswers[paramCode] !== undefined}`);
 
                 // User answers are keyed by paramCode (e.g., RFC_17_0, RFC_589_0, etc.)
-                const userAnswer = userAnswers[paramCode];
+                // Fall back to the question's own DefaultAnswer for required prompts we
+                // didn't anticipate, so we don't get an E0006 "answer is required" error.
+                let userAnswer = userAnswers[paramCode];
+                if (userAnswer === undefined) {
+                    let def = qa['DefaultAnswer'] || qa['lvis:DefaultAnswer'];
+                    if (Array.isArray(def)) def = def[0];
+                    if (def !== undefined && def !== null && def !== '') {
+                        userAnswer = def;
+                        console.info(`↩️ Using FirstAm DefaultAnswer for ${paramCode}: ${def}`);
+                    }
+                }
 
                 if (userAnswer !== undefined) {
                     // Update the answer - keep the same structure as original
@@ -1174,6 +1182,21 @@ function generateDefaultL2Answers(noteAmount, stateCode, loanPurposeType) {
     answers['RFC_10295_0'] = 'N'; // Exempt from Documentary Stamps? → No
     answers['RFC_10296_0'] = 'N'; // Exempt from both? → No
     answers['FACC_284_0'] = '2'; // Federal/Tax Exempt Credit Union? → No
+
+    // Texas R-8 refinance credit asks for the PRIOR LOAN (not a prior policy).
+    // FirstAm requires these or returns E0006. ParamCodes from the live TX L2 schema.
+    // Optimistic default: prior loan = current loan, recorded ~3 years ago, no 2nd loan.
+    if (stateCode === 'TX') {
+        const threeYearsAgo = new Date();
+        threeYearsAgo.setFullYear(threeYearsAgo.getFullYear() - 3);
+        const txPriorDate = `${threeYearsAgo.getMonth() + 1}/${threeYearsAgo.getDate()}/${threeYearsAgo.getFullYear()}`;
+        answers['P0_1522'] = String(noteAmount); // Total Payoff Amount of 1st Prior Loan
+        answers['P0_1526'] = String(noteAmount); // Original Amount of 1st Prior Loan
+        answers['P0_1528'] = txPriorDate;        // Recording Date of 1st Prior Loan
+        answers['P0_1524'] = '0';                // 2nd Prior Loan payoff → none
+        answers['P0_1527'] = '0';                // 2nd Prior Loan original → none
+        answers['P0_1529'] = '1/1/1900';         // 2nd Prior Loan date → none sentinel
+    }
 
     console.info(`📋 Generated ${Object.keys(answers).length} default L2 answers for ${stateCode} ${loanPurposeType}`);
     return answers;

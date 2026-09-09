@@ -11,10 +11,12 @@ const {
     buildSettlementServiceBlock,
     buildRecordingServiceBlock,
     buildTransactionTypesRequestXML,
-    parseTransactionTypesResponse
+    parseTransactionTypesResponse,
+    normalizeCountyForFirstAm
 } = require('../shared/xml-builders');
 const constants = require('../shared/constants');
 const { applyCentralizedRateIfEligible } = require('../shared/centralized-integration');
+const { firstAmRequestWithRetry } = require('../shared/firstam-retry');
 
 /**
  * Handle L1 (initial) RateCalc request for official quotes
@@ -76,16 +78,15 @@ async function handleL1Request(params) {
 
                 console.info('📄 TransactionTypes Request XML:\n', transactionTypesRequestXML);
 
-                const transactionTypesResponse = await axios.post(
-                    'https://calculator.lvis.firstam.com/ProductList',
-                    transactionTypesRequestXML,
-                    {
-                        headers: {
-                            Authorization: `Bearer ${token}`,
-                            'Content-Type': 'application/xml',
-                        },
+                const transactionTypesResponse = await firstAmRequestWithRetry({
+                    method: 'post',
+                    url: 'https://calculator.lvis.firstam.com/ProductList',
+                    data: transactionTypesRequestXML,
+                    headers: {
+                        Authorization: `Bearer ${token}`,
+                        'Content-Type': 'application/xml',
                     }
-                );
+                }, { label: 'FirstAm TransactionTypes' });
 
                 console.info("📦 TransactionTypes raw XML response:\n", transactionTypesResponse.data);
 
@@ -148,16 +149,15 @@ async function handleL1Request(params) {
         
         console.info('Sending ProductList request...');
         
-        const productListResponse = await axios.post(
-            'https://calculator.lvis.firstam.com/ProductList',
-            productListRequestXML,
-            {
-                headers: {
-                    Authorization: `Bearer ${token}`,
-                    'Content-Type': 'application/xml',
-                },
+        const productListResponse = await firstAmRequestWithRetry({
+            method: 'post',
+            url: 'https://calculator.lvis.firstam.com/ProductList',
+            data: productListRequestXML,
+            headers: {
+                Authorization: `Bearer ${token}`,
+                'Content-Type': 'application/xml',
             }
-        );
+        }, { label: 'FirstAm ProductList' });
 
         // Log full ProductList response for debugging
         console.info('📦 ProductList raw XML response:\n', productListResponse.data);
@@ -248,16 +248,15 @@ async function handleL1Request(params) {
         // Log full request XML for debugging
         console.info('📤 Full RateCalc Request XML:\n', requestXML);
         
-        const l1Response = await axios.post(
-            'https://calculator.lvis.firstam.com/',
-            requestXML,
-            {
-                headers: {
-                    Authorization: `Bearer ${token}`,
-                    'Content-Type': 'application/xml'
-                }
+        const l1Response = await firstAmRequestWithRetry({
+            method: 'post',
+            url: 'https://calculator.lvis.firstam.com/',
+            data: requestXML,
+            headers: {
+                Authorization: `Bearer ${token}`,
+                'Content-Type': 'application/xml'
             }
-        );
+        }, { label: 'FirstAm L1 RateCalc' });
         
         console.info('L1 Response received, parsing...');
         
@@ -426,6 +425,7 @@ async function handleL1Request(params) {
         
     } catch (error) {
         console.error('Error in L1 request:', error);
+        if (error.code === 'UPSTREAM_TIMEOUT') throw error; // preserve typed timeout for the 503 path
         throw new Error(`Failed to process L1 request: ${error.message}`);
     }
 }
@@ -448,7 +448,8 @@ function buildRateCalcRequestXMLForL1(params) {
     
     const salesAmount = LoanPurposeType === 'Refinance' ? NoteAmount : SalesContractAmount;
     const noteAmountToUse = Number(NoteAmount) === 0 ? 1000 : NoteAmount;
-    
+    const firstAmCounty = normalizeCountyForFirstAm(countyName);
+
     return `<?xml version="1.0" encoding="utf-8"?>
 <lvis:LVIS_XML xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:lvis="http://services.firstam.com/lvis/v2.0">
   <lvis:LVIS_HEADER>
@@ -485,7 +486,7 @@ function buildRateCalcRequestXMLForL1(params) {
                     <SUBJECT_PROPERTY>
                       <ADDRESS>
                         <CityName>${city}</CityName>
-                        <CountyName>${countyName}</CountyName>
+                        <CountyName>${firstAmCounty}</CountyName>
                         <PostalCode>${PostalCode}</PostalCode>
                         <StateCode>${stateCode}</StateCode>
                       </ADDRESS>

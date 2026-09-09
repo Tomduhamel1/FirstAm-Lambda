@@ -1,4 +1,4 @@
-const axios = require('axios');
+const { firstAmRequestWithRetry } = require('./firstam-retry');
 
 const clientId = process.env.FIRSTAM_CLIENT_ID || 'ff4f2fdb-fe7d-430b-bb6c-8b95aae52f02';
 const clientSecret = process.env.FIRSTAM_CLIENT_SECRET || 'o4G' + '8Q~Y0rdx8DJfYDDnsIvx8wUfakNwSStNsmcC-';
@@ -19,12 +19,16 @@ async function getOAuthToken() {
     console.info('Fetching new OAuth token...');
     
     try {
-        const tokenResponse = await axios.post(oauthUrl, new URLSearchParams({
-            grant_type: 'client_credentials',
-            client_id: clientId,
-            client_secret: clientSecret,
-            scope: scope
-        }));
+        const tokenResponse = await firstAmRequestWithRetry({
+            method: 'post',
+            url: oauthUrl,
+            data: new URLSearchParams({
+                grant_type: 'client_credentials',
+                client_id: clientId,
+                client_secret: clientSecret,
+                scope: scope
+            })
+        }, { label: 'FirstAm OAuth', retries: 1 });
 
         cachedToken = tokenResponse.data.access_token;
         // Set token expiry to 50 minutes from now (tokens usually last 60 minutes)
@@ -34,6 +38,7 @@ async function getOAuthToken() {
         return cachedToken;
     } catch (error) {
         console.error('Failed to fetch OAuth token:', error.message);
+        if (error.code === 'UPSTREAM_TIMEOUT') throw error; // keep the typed timeout so handlers can return a 503
         throw new Error('Failed to authenticate with FirstAm API');
     }
 }

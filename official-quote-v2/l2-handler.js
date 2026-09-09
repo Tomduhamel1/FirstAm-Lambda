@@ -7,6 +7,8 @@ const { mapAnswersToL2Format } = require('./question-parser');
 const { applyCentralizedRateIfEligible } = require('../shared/centralized-integration');
 const { extractEndorsementFees, buildEndorsementFeeLineItems } = require('./endorsement-utils');
 const { addFNTEFeesToResponse } = require('../shared/fnte-fees');
+const { filterCashPurchaseFees } = require('../shared/cash-purchase-filter');
+const { firstAmRequestWithRetry } = require('../shared/firstam-retry');
 
 /**
  * Handle L2 request with user answers to get final rates
@@ -57,17 +59,16 @@ async function handleL2Request(params) {
         
         console.info('Sending L2 RateCalc request...');
         
-        // Send L2 request
-        const l2Response = await axios.post(
-            'https://calculator.lvis.firstam.com/',
-            l2RequestXML,
-            {
-                headers: {
-                    Authorization: `Bearer ${token}`,
-                    'Content-Type': 'application/xml'
-                }
+        // Send L2 request (retries on transient FirstAm 5xx — see shared/firstam-retry.js)
+        const l2Response = await firstAmRequestWithRetry({
+            method: 'post',
+            url: 'https://calculator.lvis.firstam.com/',
+            data: l2RequestXML,
+            headers: {
+                Authorization: `Bearer ${token}`,
+                'Content-Type': 'application/xml'
             }
-        );
+        }, { label: 'FirstAm L2 RateCalc' });
         
         console.info('L2 Response received, parsing final rates...');
         
@@ -188,6 +189,9 @@ async function handleL2Request(params) {
             console.info('L2 Handler: No endorsements metadata provided from L1');
         }
 
+        // Filter out mortgage-related fees for cash purchases (Phase 1 fix)
+        finalFees = filterCashPurchaseFees(finalFees, originalNoteAmount, loanPurposeType);
+
         // Add FNTE state-specific fees (settlement, notary, tax review, etc.)
         await addFNTEFeesToResponse(finalFees, stateCode, loanPurposeType, 'L2 Handler');
 
@@ -224,6 +228,7 @@ async function handleL2Request(params) {
         
     } catch (error) {
         console.error('Error in L2 request:', error);
+        if (error.code === 'UPSTREAM_TIMEOUT') throw error; // preserve typed timeout for the 503 path
         throw new Error(`Failed to process L2 request: ${error.message}`);
     }
 }
@@ -471,7 +476,15 @@ function processFees(fees, parties = []) {
             // Extract fee label and description for filtering
             const feeLabel = fee['$']?.['xlink:label'] || '';
             const feeDetail = fee['FEE_DETAIL'];
-            const feeDescription = feeDetail?.['FeeDescription'] || 'Unknown Fee';
+            let feeDescription = feeDetail?.['FeeDescription'] || 'Unknown Fee';
+
+            // Standardize lender's policy fee description for centralized rate integration
+            // FEE_POLICY_1 = Lender's policy for refinance transactions
+            // FEE_POLICY_2 = Lender's policy for purchase transactions
+            if (feeLabel === 'FEE_POLICY_1' || feeLabel === 'FEE_POLICY_2') {
+                feeDescription = "Title - Lender's Title Insurance";
+                console.info(`Standardized lender's policy description: ${feeLabel} → "${feeDescription}"`);
+            }
 
             // Skip Simultaneous Issue fees (lender's policy discount, not a standalone fee)
             if (feeDescription.toLowerCase().includes('simultaneous')) {

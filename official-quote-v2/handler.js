@@ -2,6 +2,8 @@ const { v4: uuidv4 } = require('uuid');
 const { handleL1Request } = require('./l1-handler');
 const { handleL2Request, buildL2Summary, processFees } = require('./l2-handler');
 const { addFNTEFeesToResponse } = require('../shared/fnte-fees');
+const { upstreamTimeoutResponse } = require('../shared/firstam-retry');
+const { filterCashPurchaseFees } = require('../shared/cash-purchase-filter');
 const { 
     formatQuestionsForWebApp, 
     validateAnswers,
@@ -76,6 +78,8 @@ async function handleOfficialQuoteV2(event) {
         }
     } catch (error) {
         console.error('Error in official quote V2 handler:', error);
+        const timeoutResponse = upstreamTimeoutResponse(error, getCORSHeaders());
+        if (timeoutResponse) return timeoutResponse;
         return {
             statusCode: 500,
             headers: getCORSHeaders(),
@@ -153,19 +157,14 @@ async function startOfficialQuoteV2(requestBody) {
             // Rates available immediately (no L2 needed)
             // Process fees from raw MISMO XML to simple format
             console.info('[Handler] Processing fees for no-L2 path');
-            const processedFees = processFees(l1Result.fees, l1Result.parties || []);
+            let processedFees = processFees(l1Result.fees, l1Result.parties || []);
 
-            // Zero out lender's policy amounts if original NoteAmount was 0 (cash deal)
-            if (l1Result.originalNoteAmount === 0 && l1Result.loanPurposeType !== 'Cash Purchase') {
-                console.info(`💰 NoteAmount was 0 - zeroing out lender's policy amounts for backward compatibility`);
-                processedFees.forEach(fee => {
-                    if (fee.FeeDescription && fee.FeeDescription.includes('Lender')) {
-                        console.info(`   Zeroing: ${fee.FeeDescription}`);
-                        fee.BuyerFee = "0";
-                        fee.SellerFee = "0";
-                    }
-                });
-            }
+            // Filter out mortgage-related fees for cash purchases (Phase 1 fix)
+            processedFees = filterCashPurchaseFees(
+                processedFees,
+                l1Result.originalNoteAmount,
+                l1Result.loanPurposeType
+            );
 
             // Add FNTE state-specific fees (settlement, notary, etc.)
             await addFNTEFeesToResponse(
@@ -301,6 +300,8 @@ async function startOfficialQuoteV2(requestBody) {
         
     } catch (error) {
         console.error('Error starting official quote V2:', error);
+        const timeoutResponse = upstreamTimeoutResponse(error, getCORSHeaders());
+        if (timeoutResponse) return timeoutResponse;
         return {
             statusCode: 500,
             headers: getCORSHeaders(),
@@ -427,6 +428,8 @@ async function updatePagesV2(requestBody) {
         
     } catch (error) {
         console.error('Error updating page numbers:', error);
+        const timeoutResponse = upstreamTimeoutResponse(error, getCORSHeaders());
+        if (timeoutResponse) return timeoutResponse;
         return {
             statusCode: 500,
             headers: getCORSHeaders(),
@@ -579,6 +582,7 @@ async function submitAnswersV2(requestBody) {
             countyName: l1Response.locationData?.county,
             loanPurposeType: session.LoanPurposeType,
             noteAmount: session.NoteAmount,
+            originalNoteAmount: session.NoteAmount,  // For cash purchase filtering
             // Pass endorsements metadata from L1 for fee extraction in L2
             endorsements: l1Response.endorsements
         });
@@ -607,6 +611,8 @@ async function submitAnswersV2(requestBody) {
         
     } catch (error) {
         console.error('Error submitting answers V2:', error);
+        const timeoutResponse = upstreamTimeoutResponse(error, getCORSHeaders());
+        if (timeoutResponse) return timeoutResponse;
         return {
             statusCode: 500,
             headers: getCORSHeaders(),
