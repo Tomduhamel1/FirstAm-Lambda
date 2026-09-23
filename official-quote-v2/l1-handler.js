@@ -576,7 +576,23 @@ function parseL2Questions(calcRateLevel2Data) {
                     value: opt['lvis:Value']
                 }));
             }
-            
+
+            // FirstAm sometimes returns placeholder prompt rows with no question text, no
+            // LinkKey, a ParamCode with a missing rate key (e.g. "RFC__0") and a single option
+            // whose key/value are empty (seen for Marion County, FL recording fees, 2026-09-23).
+            // They cannot be answered and would fail validation, so skip them.
+            const hasText = Boolean((question.questionText || '').trim());
+            const hasUsableOption = question.options.some(opt => String(opt.value ?? '').trim() !== '');
+            if (!hasText && !hasUsableOption) {
+                console.warn(`Skipping blank L2 question row from FirstAm (paramCode="${question.paramCode}", linkKey="${question.linkKey || ''}")`);
+                return;
+            }
+            // Same ParamCode listed twice: keep the first.
+            if (question.paramCode && questions.some(q => q.paramCode === question.paramCode)) {
+                console.warn(`Skipping duplicate L2 question row (paramCode="${question.paramCode}")`);
+                return;
+            }
+
             questions.push(question);
         }
     });

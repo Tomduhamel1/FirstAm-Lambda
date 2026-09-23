@@ -210,8 +210,31 @@ function mapAnswersToL2Format(calcRateLevel2Data, userAnswers) {
     const qandaArray = qandas?.['RateCalcQandA'] || qandas?.['lvis:RateCalcQandA'];
     
     if (qandaArray) {
-        const questions = Array.isArray(qandaArray) ? qandaArray : [qandaArray];
-        
+        let questions = Array.isArray(qandaArray) ? qandaArray : [qandaArray];
+
+        // Drop FirstAm placeholder prompt rows (no question text, no LinkKey, only empty options,
+        // ParamCode like "RFC__0"). They cannot be answered, and if sent back FirstAm rejects the
+        // whole L2 request with 'E0006 - "" prompt answer is required' (Marion County FL, 2026-09-23).
+        const isBlankPromptRow = qa => {
+            const isPrompt = (qa['IsPrompt'] || qa['lvis:IsPrompt']) === 'true';
+            const text = String(qa['Question'] || qa['lvis:Question'] || '').trim();
+            const linkKey = String(qa['LinkKey'] || qa['lvis:LinkKey'] || '').trim();
+            const opts = (qa['Options'] || qa['lvis:Options'] || {});
+            let kv = opts['KeyValue'] || opts['lvis:KeyValue'] || [];
+            kv = Array.isArray(kv) ? kv : [kv];
+            const hasUsableOption = kv.some(o => String((o && (o['Value'] ?? o['lvis:Value'])) ?? '').trim() !== '');
+            return isPrompt && !text && !linkKey && !hasUsableOption;
+        };
+        const blankRows = questions.filter(isBlankPromptRow);
+        if (blankRows.length > 0) {
+            console.warn(`Dropping ${blankRows.length} blank FirstAm prompt row(s) from L2 request: ` +
+                blankRows.map(qa => (qa['Param'] || qa['lvis:Param'] || {})['ParamCode'] ?? (qa['lvis:Param'] || {})['lvis:ParamCode']).join(', '));
+            questions = questions.filter(qa => !isBlankPromptRow(qa));
+            const qandasObj = rateCalcRequest['QandAs'] ? rateCalcRequest['QandAs'] : rateCalcRequest['lvis:QandAs'];
+            const arrayKey = qandasObj['RateCalcQandA'] ? 'RateCalcQandA' : 'lvis:RateCalcQandA';
+            qandasObj[arrayKey] = questions;
+        }
+
         questions.forEach(qa => {
             // Check for IsPrompt flag - questions with IsPrompt=true need answers
             const isPrompt = qa['IsPrompt'] || qa['lvis:IsPrompt'];

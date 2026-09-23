@@ -80,6 +80,17 @@ async function handleL2Request(params) {
         
         // Debug log the raw response (first 2000 chars)
         console.info('L2 Raw Response (first 2000 chars):', l2Response.data.substring(0, 2000));
+
+        // FirstAm reports validation/calculation failures inside a 200 response. Without this
+        // check the quote came back "completed" with only FNTE fees and no FirstAm fees.
+        const ackNack = parsedL2Response?.['lvis:LVIS_XML']?.['lvis:LVIS_ACK_NACK'];
+        const ackStatus = ackNack?.['lvis:StatusCd'];
+        if (ackNack && ackStatus && String(ackStatus) !== '1000') {
+            const desc = ackNack['lvis:StatusDescription'] || ackNack['lvis:ExceptionMessage'] || 'unknown error';
+            const type = ackNack['lvis:ExceptionType'] ? ` (${ackNack['lvis:ExceptionType']})` : '';
+            console.error(`FirstAm L2 RateCalc rejected the request: status=${ackStatus}${type}: ${desc}`);
+            throw new Error(`FirstAm rate calculator rejected the request${type}: ${desc}`);
+        }
         
         // Extract fees, parties and loan comments
         const { fees, parties } = extractFeesAndPartiesFromL2Response(parsedL2Response);
