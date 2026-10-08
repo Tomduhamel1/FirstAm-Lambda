@@ -43,6 +43,14 @@ function formatQuestionsForWebApp(rawQuestions) {
                 case 'STRING':
                     formattedQuestion.type = 'text';
                     break;
+                case 'DATE':
+                    // Stays a text input for the web app. Optional: a blank date is filled in by
+                    // applyDefaultAnswers() (e.g. "Date of Prior Policy" when there is no prior policy).
+                    formattedQuestion.type = 'text';
+                    formattedQuestion.format = 'date';
+                    formattedQuestion.placeholder = 'MM/DD/YYYY';
+                    formattedQuestion.required = false;
+                    break;
                 default:
                     formattedQuestion.type = 'text';
             }
@@ -93,6 +101,50 @@ function generateHelpText(question) {
     }
     
     return 'Please provide the requested information for accurate quote calculation';
+}
+
+/**
+ * Check a date answer. FirstAm accepts MM/DD/YYYY and YYYY-MM-DD; anything else (e.g. "01012024")
+ * comes back as status 9998 "String was not recognized as a valid DateTime".
+ */
+function isValidDateAnswer(value) {
+    const text = String(value).trim();
+    let match = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    let year, month, day;
+    if (match) {
+        [month, day, year] = [Number(match[1]), Number(match[2]), Number(match[3])];
+    } else if ((match = text.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/))) {
+        [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])];
+    } else {
+        return false;
+    }
+    const date = new Date(Date.UTC(year, month - 1, day));
+    return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+}
+
+/**
+ * Fill in answers the user left blank on optional questions.
+ * Blank date questions get one year ago, the same default quick-quote sends for P0_1539.
+ * @param {Array} questions - Formatted questions
+ * @param {Object} answers - User-provided answers (key-value pairs by paramCode)
+ * @returns {Object} Copy of answers with defaults applied
+ */
+function applyDefaultAnswers(questions, answers) {
+    const result = { ...answers };
+
+    questions.forEach(question => {
+        const answer = result[question.paramCode];
+        const isBlank = answer === undefined || answer === null || String(answer).trim() === '';
+
+        if (question.format === 'date' && isBlank) {
+            const oneYearAgo = new Date();
+            oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
+            result[question.paramCode] = oneYearAgo.toISOString().split('T')[0];
+            console.info(`No answer for date question ${question.paramCode} (${question.paramName}) - defaulting to ${result[question.paramCode]}`);
+        }
+    });
+
+    return result;
 }
 
 /**
@@ -172,6 +224,14 @@ function validateAnswers(questions, answers) {
                     break;
                     
                 case 'text':
+                    if (question.format === 'date' && String(answer).trim() !== '' && !isValidDateAnswer(answer)) {
+                        errors.push({
+                            questionId: question.paramCode,
+                            paramCode: question.paramCode,
+                            error: 'Must be a valid date in MM/DD/YYYY format'
+                        });
+                        break;
+                    }
                     // Text validation if needed
                     if (question.maxLength && answer.length > question.maxLength) {
                         errors.push({
@@ -325,6 +385,7 @@ function generateQuestionSummary(questions, answers) {
 module.exports = {
     formatQuestionsForWebApp,
     validateAnswers,
+    applyDefaultAnswers,
     mapAnswersToL2Format,
     groupQuestionsByCategory,
     generateQuestionSummary

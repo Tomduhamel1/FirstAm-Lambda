@@ -7,6 +7,7 @@ const { filterCashPurchaseFees } = require('../shared/cash-purchase-filter');
 const { 
     formatQuestionsForWebApp, 
     validateAnswers,
+    applyDefaultAnswers,
     generateQuestionSummary 
 } = require('./question-parser');
 const {
@@ -512,6 +513,9 @@ async function submitAnswersV2(requestBody) {
             };
         }
         
+        // Fill in optional questions left blank (e.g. Date of Prior Policy)
+        answers = applyDefaultAnswers(formattedQuestions, answers);
+
         // Extract page numbers from answers if they exist
         let pageNumbers = session.pageNumbers; // Use stored page numbers as default
         let needsL1Refresh = false;
